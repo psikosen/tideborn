@@ -1,0 +1,12 @@
+node_modules/
+dist/
+output/
+submission/
+assets/
+art/
+artifacts/
+Tideborn-submission.zip
+*.tsbuildinfo
+.DS_Store
+**/.DS_Store
+
