@@ -606,3 +606,12 @@ Original prompt: Create a new `Tideborn` project: a Three.js/HTML5 2.5D granular
 - Strengthened `scripts/verify-imported-creature-assets.mjs` with a rendered-geometry check. It samples the attached GLB's transformed vertices and now rejects a front-facing orca unless its XY silhouette is at least 2.1 times wider than tall.
 - Focused full-GLB verification passed with a measured 4.34 m × 1.46 m silhouette (2.98:1), 44 asset instances, 15 animated mixers, zero failed assets, and zero console/page errors. Visual QA confirms the authored black-and-white orca is broadside in `output/imported-creatures/pelagic-orca.png`.
 - The mandatory standard gameplay client also reached `mode: playing` through keyboard input with no reported runtime errors; its capture is `output/orca-orientation-standard-enter/shot-0.png`.
+
+## 2026-08-18 — Grounded crab crawling
+
+- Replaced velocity-based crab pitching with sampled terrain support. Left, center, and right foot probes establish a planted stance; the carapace inherits only a restrained portion of gentle terrain slope and remains within roughly ±5 degrees.
+- Lifecycle scale now affects terrain clearance, so juveniles and large adults place their feet at the correct height. The three authored crab GLBs also use bottom/foot anchors instead of generic bounding-box centers.
+- Ordinary foraging no longer treats a one-cell pinnacle or near-vertical cliff as walkable ground. Crabs turn around with their stance planted at ledges, while Jet Blast stagger can still launch them normally.
+- Crab collision correction now re-seats grounded animals before rendering and restores their last planted position if another crab would shove them over a cliff. Visuals update after collision, eliminating the prior one-frame body/model mismatch.
+- Added grounded-state telemetry (`grounded`, body angle, support gap, crawl distance) and `scripts/verify-crab-ground-crawl.mjs`. The full-GLB run verified shore, mudflat, and coconut crabs all moved, retained zero physics support gap, avoided terrain penetration, and kept modeled feet within contact tolerance with zero browser errors.
+- Focused captures are in `output/crab-ground-crawl/`. The mandatory standard client reached `mode: playing`, loaded both nearby full crab GLBs with zero asset failures, and reported every nearby shore crab grounded with zero support gap.

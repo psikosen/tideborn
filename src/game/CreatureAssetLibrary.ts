@@ -32,6 +32,7 @@ interface CreatureAssetDefinition {
   animationSpeed?: number;
   emissiveColor?: string;
   emissiveIntensity?: number;
+  groundClearance?: number;
 }
 
 export interface CreatureAssetSnapshot {
@@ -151,18 +152,21 @@ const DEFINITIONS: Record<CreatureAssetId, CreatureAssetDefinition> = {
     rotateY: 0,
     animationNames: ['Scene'],
     animationSpeed: 1.1,
+    groundClearance: 0.19,
   },
   'coconut-crab': {
     url: './assets/models/crabs/coconut-crab.glb',
     original: 'coconut-crab',
     targetLength: 1.28,
     rotateY: 0,
+    groundClearance: 0.34,
   },
   'ilyoplax-mud-crab': {
     url: './assets/models/crabs/ilyoplax-mud-crab.glb',
     original: 'ilyoplax-mud-crab',
     targetLength: 0.46,
     rotateY: 0,
+    groundClearance: 0.13,
   },
   'survivor-octopus': {
     original: 'survivor-octopus',
@@ -334,7 +338,13 @@ export class CreatureAssetLibrary {
     const longest = Math.max(size.x, size.y, size.z, 0.0001);
     const scale = definition.targetLength / longest;
     source.scale.setScalar(scale);
-    source.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+    source.position.set(
+      -center.x * scale,
+      definition.groundClearance === undefined
+        ? -center.y * scale
+        : -bounds.min.y * scale - definition.groundClearance,
+      -center.z * scale,
+    );
 
     const stage = new THREE.Group();
     stage.add(source);

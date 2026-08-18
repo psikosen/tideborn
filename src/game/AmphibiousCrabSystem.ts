@@ -49,6 +49,10 @@ interface Crab {
   vx: number;
   vy: number;
   direction: number;
+  grounded: boolean;
+  groundAngle: number;
+  groundY: number | null;
+  crawlDistance: number;
   phase: number;
   hunger: number;
   behavior: CrabBehavior;
@@ -196,15 +200,17 @@ export class AmphibiousCrabSystem {
         crab.pinchCooldown = 3.4;
         events.push({ kind: 'pinch', crabId: crab.id, species: crab.species, x: crab.x, y: crab.y, damage: 7, knockbackX: Math.sign(player.x - crab.x || 1) * 1.1 });
       }
-      this.updateVisual(crab, elapsed);
     }
     const bodies = visible.map((crab) => this.body(crab));
+    const preCollision = visible.map((crab) => ({ x: crab.x, y: crab.y, grounded: crab.grounded }));
     this.collision.resolve(bodies, () => true, 2);
     for (let index = 0; index < visible.length; index += 1) {
       visible[index].x = wrapWorldX(bodies[index].x);
       visible[index].y = bodies[index].y;
       visible[index].vx = bodies[index].vx ?? visible[index].vx;
       visible[index].vy = bodies[index].vy ?? visible[index].vy;
+      this.settleAfterCollision(visible[index], preCollision[index]);
+      this.updateVisual(visible[index], elapsed);
     }
     return events;
   }
@@ -287,6 +293,12 @@ export class AmphibiousCrabSystem {
           targetId: crab.targetId, targetKind: crab.targetKind, ageYears: Number(crab.life.ageYears.toFixed(2)), lifespanYears: Number(crab.life.lifespanYears.toFixed(2)),
           lifeStage: this.lifecycle.stage(crab.life), sex: crab.life.sex, generation: crab.life.generation,
           sizeMeters: Number((CONFIG[crab.species].lengthM * this.lifecycle.currentScale(crab.life)).toFixed(2)),
+          grounded: crab.grounded,
+          groundAngleDegrees: Number(THREE.MathUtils.radToDeg(crab.groundAngle).toFixed(1)),
+          supportGap: crab.groundY === null
+            ? -1
+            : Number((crab.y - (crab.groundY + CONFIG[crab.species].radiusY * this.lifecycle.currentScale(crab.life))).toFixed(3)),
+          crawlDistance: Number(crab.crawlDistance.toFixed(2)),
         })),
       foodWeb: { fishEaten: this.predationKills.fish, clamsEaten: this.predationKills.clam, recentPredation: this.recentPredation },
       lifecycle: this.lifecycle.snapshot(),
@@ -301,12 +313,15 @@ export class AmphibiousCrabSystem {
     for (let x = WORLD_MIN_X + 1; x < WORLD_MIN_X + WORLD_WIDTH - 1; x += 1.35) {
       const surface = this.highestSurface(x);
       if (surface === null) continue;
+      const config = CONFIG[species];
+      const stable = this.stableSupportAt(x, surface + config.radiusY, config.radiusX, config.radiusY);
+      if (!stable) continue;
       const valid = species === 'coconut-crab'
-        ? surface >= BASE_SEA_LEVEL + 0.12
+        ? stable.center >= BASE_SEA_LEVEL + 0.12
         : species === 'shore-crab'
-          ? surface >= BASE_SEA_LEVEL - 3.6 && surface <= BASE_SEA_LEVEL + 1.8
-          : surface < BASE_SEA_LEVEL - 0.35 && surface > -13;
-      if (valid) candidates.push({ x, y: surface + CONFIG[species].radiusY });
+          ? stable.center >= BASE_SEA_LEVEL - 3.6 && stable.center <= BASE_SEA_LEVEL + 1.8
+          : stable.center < BASE_SEA_LEVEL - 0.35 && stable.center > -13;
+      if (valid) candidates.push({ x, y: stable.center + config.radiusY });
     }
     return candidates.length ? candidates : [{ x: species === 'coconut-crab' ? -20 : -2, y: species === 'coconut-crab' ? 5 : 1 }];
   }
@@ -337,31 +352,139 @@ export class AmphibiousCrabSystem {
 
   private followTerrain(crab: Crab, dt: number): void {
     const config = CONFIG[crab.species];
+    const lifeScale = this.lifecycle.currentScale(crab.life);
+    const radiusX = config.radiusX * lifeScale;
+    const radiusY = config.radiusY * lifeScale;
     const previousX = crab.x;
     const proposedX = wrapWorldX(crab.x + crab.vx * dt);
-    const support = this.surfaceNear(proposedX, crab.y, config.radiusY);
-    if (support !== null) {
-      const targetY = support + config.radiusY;
-      if (Math.abs(targetY - crab.y) <= 0.72) {
+    const stableSupport = this.stableSupportAt(proposedX, crab.y, radiusX, radiusY);
+    if (stableSupport) {
+      const targetY = stableSupport.center + radiusY;
+      if (Math.abs(targetY - crab.y) <= this.maximumCrawlStep(radiusY)) {
         crab.x = proposedX;
+        crab.crawlDistance += Math.abs(crab.vx * dt);
         crab.y += (targetY - crab.y) * Math.min(1, dt * 11);
         crab.vy = (targetY - crab.y) * 3;
+        crab.grounded = Math.abs(targetY - crab.y) <= Math.max(this.world.cellSize * 0.75, 0.08);
+        crab.groundY = stableSupport.center;
+        this.updateGroundAngle(crab, stableSupport, dt);
       } else {
         crab.vx *= -0.42;
+        crab.grounded = false;
+        crab.groundY = null;
+        crab.groundAngle *= Math.pow(0.08, dt);
         this.terrainContacts += 1;
       }
     } else {
+      const currentSupport = this.stableSupportAt(previousX, crab.y, radiusX, radiusY);
+      if (currentSupport) {
+        // Do not let ordinary foraging walk a wide carapace onto a one-cell
+        // pinnacle or down a near-vertical cliff. Turn around while all feet
+        // remain planted on the last stable patch.
+        crab.x = previousX;
+        crab.y = currentSupport.center + radiusY;
+        crab.vx *= -0.42;
+        crab.vy = 0;
+        crab.grounded = true;
+        crab.groundY = currentSupport.center;
+        this.updateGroundAngle(crab, currentSupport, dt);
+        this.terrainContacts += 1;
+        crab.vx *= Math.pow(crab.y < BASE_SEA_LEVEL ? 0.78 : 0.66, dt);
+        return;
+      }
       crab.x = proposedX;
       crab.vy -= dt * (crab.y < BASE_SEA_LEVEL ? 0.8 : 4.2);
       crab.y += crab.vy * dt;
+      crab.grounded = false;
+      crab.groundY = null;
+      crab.groundAngle *= Math.pow(0.08, dt);
     }
     if (this.world.isSolid(crab.x, crab.y) || this.world.isSolid(crab.x + Math.sign(crab.vx || 1) * config.radiusX, crab.y)) {
       crab.x = previousX;
       crab.vx *= -0.5;
       crab.y += this.world.cellSize * 1.5;
+      crab.grounded = false;
+      crab.groundY = null;
       this.terrainContacts += 1;
     }
     crab.vx *= Math.pow(crab.y < BASE_SEA_LEVEL ? 0.78 : 0.66, dt);
+  }
+
+  private updateGroundAngle(
+    crab: Crab,
+    support: { center: number; left: number; right: number; footOffset: number },
+    dt: number,
+  ): void {
+    // Crabs keep a low, stable carapace while their legs absorb most of the
+    // ground change. Only a restrained fraction of the sampled slope reaches
+    // the body, avoiding the old nose-up/nose-down velocity pitch.
+    const terrainAngle = Math.atan2(support.right - support.left, support.footOffset * 2);
+    const maximumAngle = crab.species === 'coconut-crab' ? 0.07 : 0.09;
+    const targetAngle = clamp(terrainAngle * 0.35, -maximumAngle, maximumAngle);
+    crab.groundAngle += (targetAngle - crab.groundAngle) * Math.min(1, dt * 9);
+  }
+
+  private settleAfterCollision(crab: Crab, previous: { x: number; y: number; grounded: boolean }): void {
+    if (this.elapsed < crab.staggeredUntil || (!previous.grounded && Math.abs(crab.vy) > 0.62)) return;
+    const scale = this.lifecycle.currentScale(crab.life);
+    const radiusX = CONFIG[crab.species].radiusX * scale;
+    const radiusY = CONFIG[crab.species].radiusY * scale;
+    const support = this.stableSupportAt(crab.x, crab.y, radiusX, radiusY);
+    if (!support) {
+      const previousSupport = previous.grounded
+        ? this.stableSupportAt(previous.x, previous.y, radiusX, radiusY)
+        : null;
+      if (previousSupport) {
+        // Pair resolution is allowed to separate overlapping bodies, but it
+        // must not turn a sideways shove into an accidental launch over a
+        // cliff. Restore the last planted stance and reverse the crawl.
+        crab.x = previous.x;
+        crab.y = previousSupport.center + radiusY;
+        crab.vx *= -0.35;
+        crab.vy = 0;
+        crab.grounded = true;
+        crab.groundY = previousSupport.center;
+        return;
+      }
+      crab.grounded = false;
+      crab.groundY = null;
+      return;
+    }
+    const targetY = support.center + radiusY;
+    if (Math.abs(targetY - crab.y) > this.maximumCrawlStep(radiusY)) return;
+    crab.y = targetY;
+    crab.vy = 0;
+    crab.grounded = true;
+    crab.groundY = support.center;
+  }
+
+  private stableSupportAt(
+    x: number,
+    y: number,
+    radiusX: number,
+    radiusY: number,
+  ): { center: number; left: number; right: number; footOffset: number } | null {
+    const center = this.surfaceNear(x, y, radiusY);
+    if (center === null) return null;
+    const footOffset = Math.max(this.world.cellSize * 1.25, radiusX * 0.72);
+    const left = this.surfaceNear(wrapWorldX(x - footOffset), y, radiusY);
+    const right = this.surfaceNear(wrapWorldX(x + footOffset), y, radiusY);
+    const stepLimit = this.maximumFootVariation(radiusY);
+    if (left === null || right === null
+      || Math.abs(left - center) > stepLimit
+      || Math.abs(right - center) > stepLimit) return null;
+    return { center, left, right, footOffset };
+  }
+
+  private maximumFootVariation(radiusY: number): number {
+    // A crab may step up a taller obstacle with its leading legs, but it only
+    // counts as planted ground when the whole stance differs by roughly one
+    // microcell (slightly more for the coconut crab's wider leg span).
+    return Math.max(this.world.cellSize * 1.1, radiusY * 0.5);
+  }
+
+  private maximumCrawlStep(radiusY: number): number {
+    return Math.max(this.world.cellSize * 2.6, radiusY * 1.25 + 0.08);
   }
 
   private nearestPrey(crab: Crab, prey: CrabPreyField[], range: number): CrabPreyField | null {
@@ -420,6 +543,7 @@ export class AmphibiousCrabSystem {
     this.scene.add(visual);
     const crab: Crab = {
       id, species, x, y, homeX: x, vx: (this.rng() - 0.5) * 0.18, vy: 0, direction: this.rng() < 0.5 ? -1 : 1,
+      grounded: false, groundAngle: 0, groundY: null, crawlDistance: 0,
       phase: this.rng() * Math.PI * 2, hunger: 58 + this.rng() * 34, behavior: 'foraging', targetId: null, targetKind: null,
       feedingUntil: 0, staggeredUntil: 0, pinchCooldown: 0, alive: true, life: this.lifecycle.create(species, lifeOptions), visual,
     };
@@ -466,9 +590,10 @@ export class AmphibiousCrabSystem {
 
   private updateVisual(crab: Crab, elapsed: number): void {
     const scale = this.lifecycle.currentScale(crab.life);
-    crab.visual.position.set(crab.x, crab.y + Math.sin(elapsed * 5 + crab.phase) * 0.012, 2.15);
+    const airborneBob = crab.grounded ? 0 : Math.sin(elapsed * 5 + crab.phase) * 0.006;
+    crab.visual.position.set(crab.x, crab.y + airborneBob, 2.15);
     crab.visual.scale.set(crab.direction * scale, scale, scale);
-    crab.visual.rotation.z = clamp(-crab.vx * 0.08, -0.12, 0.12);
+    crab.visual.rotation.z = crab.groundAngle;
   }
 
   private body(crab: Crab) {
