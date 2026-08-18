@@ -3,6 +3,7 @@ import { CreatureAssetId, CreatureAssetLibrary } from './CreatureAssetLibrary';
 import { BiologicalSex, CreatureLifecycleSystem, LifeHistory, LifeState } from './CreatureLifecycleSystem';
 import { CreatureCollisionSnapshot, CreatureCollisionSystem } from './CreatureCollisionSystem';
 import { MatterWorld } from './MatterWorld';
+import { TreeInteractionSystem } from './TreeInteractionSystem';
 import { BASE_SEA_LEVEL, WORLD_MAX_Y, WORLD_MIN_X, WORLD_WIDTH, clamp, wrapWorldX } from './data';
 
 export type CrabSpecies = 'shore-crab' | 'mudflat-crab' | 'coconut-crab';
@@ -53,6 +54,7 @@ interface Crab {
   groundAngle: number;
   groundY: number | null;
   crawlDistance: number;
+  treeContact: string | null;
   phase: number;
   hunger: number;
   behavior: CrabBehavior;
@@ -106,6 +108,7 @@ export class AmphibiousCrabSystem {
   private elapsed = 0;
   private huntCooldown = 0;
   private terrainContacts = 0;
+  private treeContacts = 0;
   private predationKills = { fish: 0, clam: 0 };
   private recentPredation: Array<{ crab: CrabSpecies; prey: CrabPreyKind; elapsed: number }> = [];
 
@@ -114,6 +117,7 @@ export class AmphibiousCrabSystem {
     private rng: () => number,
     private assets: CreatureAssetLibrary,
     private world: MatterWorld,
+    private treeInteraction?: TreeInteractionSystem,
   ) {
     this.lifecycle = new CreatureLifecycleSystem(this.rng, Object.fromEntries(
       (Object.keys(CONFIG) as CrabSpecies[]).map((species) => [species, CONFIG[species].history]),
@@ -150,6 +154,7 @@ export class AmphibiousCrabSystem {
       const playerDistance = Math.hypot(crab.x - player.x, crab.y - player.y);
       crab.visual.visible = playerDistance < 19 && Math.abs(crab.y - player.y) < 11;
       if (!crab.visual.visible) continue;
+      crab.treeContact = null;
       this.ensureAsset(crab);
       visible.push(crab);
       const staggered = elapsed < crab.staggeredUntil;
@@ -190,6 +195,7 @@ export class AmphibiousCrabSystem {
         }
       }
       this.followTerrain(crab, dt);
+      this.resolveTreeCollision(crab);
       const minimumPlayerGap = CONFIG[crab.species].radiusX + 0.46;
       if (playerDistance > 0.001 && playerDistance < minimumPlayerGap) {
         const push = minimumPlayerGap - playerDistance;
@@ -210,6 +216,7 @@ export class AmphibiousCrabSystem {
       visible[index].vx = bodies[index].vx ?? visible[index].vx;
       visible[index].vy = bodies[index].vy ?? visible[index].vy;
       this.settleAfterCollision(visible[index], preCollision[index]);
+      this.resolveTreeCollision(visible[index]);
       this.updateVisual(visible[index], elapsed);
     }
     return events;
@@ -273,6 +280,7 @@ export class AmphibiousCrabSystem {
     lifecycle: ReturnType<CreatureLifecycleSystem<CrabSpecies>['snapshot']>;
     collision: CreatureCollisionSnapshot;
     terrainContacts: number;
+    treeContacts: number;
     importedRepresentatives: Record<CrabSpecies, number>;
   } {
     const species = Object.keys(CONFIG) as CrabSpecies[];
@@ -299,11 +307,13 @@ export class AmphibiousCrabSystem {
             ? -1
             : Number((crab.y - (crab.groundY + CONFIG[crab.species].radiusY * this.lifecycle.currentScale(crab.life))).toFixed(3)),
           crawlDistance: Number(crab.crawlDistance.toFixed(2)),
+          treeContact: crab.treeContact,
         })),
       foodWeb: { fishEaten: this.predationKills.fish, clamsEaten: this.predationKills.clam, recentPredation: this.recentPredation },
       lifecycle: this.lifecycle.snapshot(),
       collision: this.collision.snapshot(),
       terrainContacts: this.terrainContacts,
+      treeContacts: this.treeContacts,
       importedRepresentatives: Object.fromEntries(species.map((id) => [id, this.importedRepresentatives.get(id) ?? 0])) as Record<CrabSpecies, number>,
     };
   }
@@ -458,6 +468,31 @@ export class AmphibiousCrabSystem {
     crab.groundY = support.center;
   }
 
+  private resolveTreeCollision(crab: Crab): void {
+    if (!this.treeInteraction || crab.y < BASE_SEA_LEVEL - 0.06) return;
+    const scale = this.lifecycle.currentScale(crab.life);
+    const radiusX = CONFIG[crab.species].radiusX * scale;
+    const radiusY = CONFIG[crab.species].radiusY * scale;
+    const bodyRadius = Math.max(radiusY * 0.88, radiusX * 0.56);
+    const contact = this.treeInteraction.resolve(crab.x, crab.y, bodyRadius);
+    if (!contact.collided) return;
+    crab.x = contact.x;
+    crab.y = contact.y;
+    const inwardVelocity = crab.vx * contact.normalX + crab.vy * contact.normalY;
+    if (inwardVelocity < 0) {
+      crab.vx -= contact.normalX * inwardVelocity * 1.08;
+      crab.vy -= contact.normalY * inwardVelocity;
+    }
+    if (Math.abs(contact.normalX) > 0.35) {
+      crab.vx += contact.normalX * 0.08;
+      crab.direction = Math.sign(contact.normalX) || crab.direction;
+      crab.homeX = wrapWorldX(crab.x + crab.direction * (1.2 + this.rng() * 1.8));
+    }
+    crab.treeContact = contact.treeId;
+    this.treeContacts += 1;
+    this.terrainContacts += 1;
+  }
+
   private stableSupportAt(
     x: number,
     y: number,
@@ -543,7 +578,7 @@ export class AmphibiousCrabSystem {
     this.scene.add(visual);
     const crab: Crab = {
       id, species, x, y, homeX: x, vx: (this.rng() - 0.5) * 0.18, vy: 0, direction: this.rng() < 0.5 ? -1 : 1,
-      grounded: false, groundAngle: 0, groundY: null, crawlDistance: 0,
+      grounded: false, groundAngle: 0, groundY: null, crawlDistance: 0, treeContact: null,
       phase: this.rng() * Math.PI * 2, hunger: 58 + this.rng() * 34, behavior: 'foraging', targetId: null, targetKind: null,
       feedingUntil: 0, staggeredUntil: 0, pinchCooldown: 0, alive: true, life: this.lifecycle.create(species, lifeOptions), visual,
     };

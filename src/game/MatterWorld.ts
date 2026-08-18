@@ -33,6 +33,22 @@ const MATERIAL_HARDNESS: Partial<Record<MaterialId, number>> = {
   [MaterialId.Snow]: 0.16,
 };
 
+export type ExcavationMaterialClass = 'loose-aggregate' | 'cohesive-earth' | 'solid-rock' | 'other';
+
+/**
+ * Loose packets yield to an octopus raking several arms through them more
+ * readily than an equally hard continuous wall. This material-side modifier
+ * keeps that behavior consistent for bare arms, shaped tools and upgrades.
+ */
+const EXCAVATION_STRENGTH_MULTIPLIER: Partial<Record<MaterialId, number>> = {
+  [MaterialId.Sand]: 1.38,
+  [MaterialId.WetSand]: 1.3,
+  [MaterialId.Mud]: 1.26,
+  [MaterialId.CrushedShell]: 1.34,
+  [MaterialId.Mineral]: 1.4,
+  [MaterialId.Soil]: 1.16,
+};
+
 const materialVertex = /* glsl */ `
   varying vec2 vUv;
   void main() {
@@ -120,6 +136,8 @@ export interface DigResult {
   material: MaterialId;
   chipped: number;
   fractureProgress: number;
+  strengthMultiplier: number;
+  materialClass: ExcavationMaterialClass;
 }
 
 export interface MatterPerformanceSnapshot {
@@ -361,7 +379,19 @@ export class MatterWorld {
   }
 
   isDiggable(mat: MaterialId, toolStrength: number): boolean {
-    return this.hardness(mat) <= toolStrength;
+    return this.hardness(mat) <= toolStrength * this.excavationStrengthMultiplier(mat);
+  }
+
+  excavationProfile(mat: MaterialId): {
+    materialClass: ExcavationMaterialClass;
+    hardness: number;
+    strengthMultiplier: number;
+  } {
+    return {
+      materialClass: this.excavationMaterialClass(mat),
+      hardness: this.hardness(mat),
+      strengthMultiplier: this.excavationStrengthMultiplier(mat),
+    };
   }
 
   dig(wx: number, wy: number, radius: number, toolStrength: number, preserveDisplacedMatter = true): DigResult {
@@ -386,7 +416,7 @@ export class MatterWorld {
           blocked = true;
           dominant = mat;
           const hardness = this.hardness(mat);
-          const strengthRatio = toolStrength / hardness;
+          const strengthRatio = toolStrength * this.excavationStrengthMultiplier(mat) / hardness;
           if (strengthRatio >= MIN_CHIP_RATIO) {
             const required = this.fractureRequired(mat);
             const chipForce = Math.max(1, Math.round(strengthRatio * strengthRatio * 10));
@@ -443,7 +473,15 @@ export class MatterWorld {
       this.modifiedCells += removed;
     }
     if (removed > 0 || chipped > 0) this.textureDirty = true;
-    return { removed, blocked, material: dominant, chipped, fractureProgress };
+    return {
+      removed,
+      blocked,
+      material: dominant,
+      chipped,
+      fractureProgress,
+      strengthMultiplier: this.excavationStrengthMultiplier(dominant),
+      materialClass: this.excavationMaterialClass(dominant),
+    };
   }
 
   addMaterial(wx: number, wy: number, mat: MaterialId, radius = 0.25): number {
@@ -613,6 +651,21 @@ export class MatterWorld {
 
   private hardness(mat: MaterialId): number {
     return MATERIAL_HARDNESS[mat] ?? 99;
+  }
+
+  private excavationStrengthMultiplier(mat: MaterialId): number {
+    return EXCAVATION_STRENGTH_MULTIPLIER[mat] ?? 1;
+  }
+
+  private excavationMaterialClass(mat: MaterialId): ExcavationMaterialClass {
+    if (mat === MaterialId.Sand
+      || mat === MaterialId.WetSand
+      || mat === MaterialId.Mud
+      || mat === MaterialId.CrushedShell
+      || mat === MaterialId.Mineral) return 'loose-aggregate';
+    if (mat === MaterialId.Soil || mat === MaterialId.Clay) return 'cohesive-earth';
+    if (mat === MaterialId.Limestone || mat === MaterialId.Basalt) return 'solid-rock';
+    return 'other';
   }
 
   private fractureRequired(mat: MaterialId): number {

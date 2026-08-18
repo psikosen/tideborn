@@ -360,7 +360,8 @@ export class Octopus {
       // A breach jet must retain its impulse for several physics frames. If
       // ordinary swim clamping immediately reduced it to 3.1 m/s, the mantle
       // could touch the surface but never launch fully into the air.
-      const maxSpeed = this.technique === 'breach jet' ? 9.4 : this.squeezing ? 2.2 : 3.1;
+      const jetBlastSwimming = this.technique === 'jet blast';
+      const maxSpeed = this.technique === 'breach jet' ? 9.4 : jetBlastSwimming ? 7.4 : this.squeezing ? 2.2 : 3.1;
       const speed = Math.hypot(this.vx, this.vy);
       if (speed > maxSpeed) {
         this.vx = (this.vx / speed) * maxSpeed;
@@ -718,9 +719,14 @@ export class Octopus {
     this.jetCooldown = 0.85;
     this.lastJetDirection.copy(normalized);
     this.lastJetStrength = 3.5;
-    // The pressure front throws matter forward and gives the mantle a readable recoil.
-    this.vx -= normalized.x * 2.15;
-    this.vy -= normalized.y * 1.55;
+    // Jet Blast is a whole-mantle surge as well as a pressure weapon. Drive
+    // the body along the aimed stream so it can breach, escape or follow the
+    // tunnel it just opened; the higher temporary swim cap preserves the
+    // impulse instead of erasing it on the next physics step.
+    this.vx += normalized.x * 6.15;
+    this.vy += normalized.y * 6.15;
+    this.jetSteerTime = 0.34;
+    this.jetSteerApplied = true;
     this.facing = Math.sign(normalized.x) || this.facing;
     this.technique = 'jet blast';
     this.techniqueTimer = 0.9;

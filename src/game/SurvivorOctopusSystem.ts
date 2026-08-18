@@ -41,6 +41,20 @@ export interface SurvivorEvent {
   y: number;
 }
 
+export interface SurvivorDevourResult {
+  caught: boolean;
+  reason: 'caught' | 'miss' | 'cooldown';
+  survivorId?: string;
+  name?: string;
+  x?: number;
+  y?: number;
+  nutrition: number;
+  healthRestore: number;
+  staminaCost: number;
+  cachedFood: number;
+  cooldownRemaining: number;
+}
+
 /**
  * Coarse whole-belt survival AI with nearby visual representatives. Rivals
  * keep needs, stores, shelters, lifespan, and goals while culled; only their
@@ -52,6 +66,9 @@ export class SurvivorOctopusSystem {
   private nextId = 1;
   private nextBreedingCheck = 110;
   private culled = 0;
+  private devourCooldown = 0;
+  private devoured = 0;
+  private recentDevouring: Array<{ survivorId: string; name: string; elapsed: number }> = [];
 
   constructor(private scene: THREE.Scene, private world: MatterWorld, private assets?: CreatureAssetLibrary) {
     this.spawn('Brine', -4.9, 1.55, -12.7, 2.85, 'female', 0);
@@ -62,6 +79,7 @@ export class SurvivorOctopusSystem {
 
   update(dt: number, elapsed: number, storm: number, player: { x: number; y: number }): SurvivorEvent[] {
     const events: SurvivorEvent[] = [];
+    this.devourCooldown = Math.max(0, this.devourCooldown - dt);
     this.culled = 0;
     for (const survivor of this.survivors) {
       if (survivor.health <= 0) {
@@ -108,11 +126,81 @@ export class SurvivorOctopusSystem {
     return events;
   }
 
+  nearest(x: number, y: number, range: number, facing = 0): { id: string; name: string; distance: number; health: number } | null {
+    const target = this.survivors
+      .filter((survivor) => survivor.health > 0)
+      .map((survivor) => {
+        const dx = this.horizontalDistance(survivor.x, x);
+        return { survivor, dx, distance: Math.hypot(dx, survivor.y - y) };
+      })
+      .filter(({ distance, dx }) => distance <= range && (facing === 0 || dx * facing > -0.55))
+      .sort((a, b) => a.distance - b.distance)[0];
+    return target
+      ? { id: target.survivor.id, name: target.survivor.name, distance: target.distance, health: target.survivor.health }
+      : null;
+  }
+
+  devour(player: { x: number; y: number; facing: number }, elapsed: number): SurvivorDevourResult {
+    const range = 1.62;
+    const staminaCost = 22;
+    if (this.devourCooldown > 0) {
+      return {
+        caught: false, reason: 'cooldown', nutrition: 0, healthRestore: 0, staminaCost: 0,
+        cachedFood: 0, cooldownRemaining: this.devourCooldown,
+      };
+    }
+    const target = this.survivors
+      .filter((survivor) => survivor.health > 0)
+      .map((survivor) => ({
+        survivor,
+        distance: Math.hypot(this.horizontalDistance(survivor.x, player.x), survivor.y - player.y),
+        forward: this.horizontalDistance(survivor.x, player.x) * player.facing,
+      }))
+      .filter(({ distance, forward }) => distance <= range && forward > -0.55)
+      .sort((a, b) => a.distance - b.distance)[0];
+    if (!target) {
+      return {
+        caught: false, reason: 'miss', nutrition: 0, healthRestore: 0, staminaCost: 0,
+        cachedFood: 0, cooldownRemaining: 0,
+      };
+    }
+
+    const { survivor } = target;
+    const adultNutrition = survivor.ageYears >= 2 ? 58 : 34;
+    const healthRestore = survivor.ageYears >= 2 ? 10 : 5;
+    const cachedFood = survivor.foodCache;
+    survivor.health = 0;
+    survivor.foodCache = 0;
+    survivor.group.visible = false;
+    survivor.vx = 0;
+    survivor.vy = 0;
+    this.devourCooldown = 1.15;
+    this.devoured += 1;
+    this.recentDevouring.push({ survivorId: survivor.id, name: survivor.name, elapsed });
+    this.recentDevouring = this.recentDevouring.slice(-6);
+    return {
+      caught: true,
+      reason: 'caught',
+      survivorId: survivor.id,
+      name: survivor.name,
+      x: survivor.x,
+      y: survivor.y,
+      nutrition: adultNutrition,
+      healthRestore,
+      staminaCost,
+      cachedFood,
+      cooldownRemaining: this.devourCooldown,
+    };
+  }
+
   snapshot(playerX: number, playerY: number): {
     simulated: number;
     visible: number;
     culled: number;
     shelters: number;
+    devoured: number;
+    devourCooldown: number;
+    recentDevouring: Array<{ survivorId: string; name: string; elapsed: number }>;
     nearby: Array<Record<string, string | number | boolean>>;
   } {
     const living = this.survivors.filter((survivor) => survivor.health > 0);
@@ -121,6 +209,9 @@ export class SurvivorOctopusSystem {
       visible: living.filter((survivor) => survivor.group.visible).length,
       culled: this.culled,
       shelters: living.filter((survivor) => survivor.shelterProgress >= 60).length,
+      devoured: this.devoured,
+      devourCooldown: Number(this.devourCooldown.toFixed(2)),
+      recentDevouring: this.recentDevouring,
       nearby: living
         .map((survivor) => ({ survivor, distance: Math.hypot(this.horizontalDistance(survivor.x, playerX), survivor.y - playerY) }))
         .filter(({ distance }) => distance <= 24)

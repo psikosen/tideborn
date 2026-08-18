@@ -432,7 +432,13 @@ export class TidebornGame {
     this.relics = new RareRelicSystem(this.scene, this.rng);
     this.proceduralClams = new ProceduralClamSystem(this.scene, this.world, PLANET_SEED + 6329);
     this.deepTubeWorms = new DeepTubeWormSystem(this.scene, PLANET_SEED + 7733);
-    this.amphibiousCrabs = new AmphibiousCrabSystem(this.scene, mulberry32(PLANET_SEED + 9017), this.creatureAssets, this.world);
+    this.amphibiousCrabs = new AmphibiousCrabSystem(
+      this.scene,
+      mulberry32(PLANET_SEED + 9017),
+      this.creatureAssets,
+      this.world,
+      this.treeInteraction,
+    );
     this.buildWorldEntities();
     this.marineLife = new MarineLifeSystem(this.scene, this.rng, this.creatureAssets, this.world);
     this.deepSeaLife = new DeepSeaLifeSystem(this.scene, this.rng, this.creatureAssets);
@@ -1010,7 +1016,7 @@ export class TidebornGame {
           ${this.controlTemplate('SHIFT', '3-charge jet chain')}
           ${this.controlTemplate('RMB / K', 'learned Jet Blast · mouse aimed')}
           ${this.controlTemplate('R', 'ink burst concealment')}
-          ${this.controlTemplate('H', 'pounce · hunt fish and crabs')}
+          ${this.controlTemplate('H', 'pounce · hunt fish, crabs, or rival octopi')}
           ${this.controlTemplate('SPACE', 'lunge · corkscrew')}
           ${this.controlTemplate('E', 'grab · gather · pry')}
           ${this.controlTemplate('E → X / LMB', 'grip then peel clams · cut vent worms')}
@@ -1679,6 +1685,45 @@ export class TidebornGame {
 
   private handleFishHunt(): void {
     const hasNet = this.toolbelt.isEquipped('net', this.inventory);
+    const huntEfficiency = 1 - this.octipoints.effect('huntEfficiency');
+    const survivorTarget = this.survivorOctopi.nearest(this.player.x, this.player.y, 1.62, this.player.facing);
+    if (survivorTarget) {
+      const requiredStamina = 22 * huntEfficiency;
+      if (this.player.stamina < requiredStamina) {
+        this.setMessage(`${survivorTarget.name} tears free. Devouring another octopus needs 22 stamina and a close forward grip.`);
+        return;
+      }
+      const result = this.survivorOctopi.devour({
+        x: this.player.x,
+        y: this.player.y,
+        facing: this.player.facing,
+      }, this.elapsed);
+      if (result.reason === 'cooldown') {
+        this.setMessage(`Your beak and arms need ${result.cooldownRemaining.toFixed(1)} seconds before another conspecific strike.`);
+        return;
+      }
+      if (result.caught && result.x !== undefined && result.y !== undefined) {
+        const direction = new THREE.Vector2(result.x - this.player.x, result.y - this.player.y);
+        if (direction.lengthSq() < 0.01) direction.set(this.player.facing, 0);
+        direction.normalize();
+        this.player.vx += direction.x * 2.7;
+        this.player.vy += direction.y * 2.7;
+        this.player.stamina = clamp(this.player.stamina - result.staminaCost * huntEfficiency, 0, 100);
+        this.player.technique = 'conspecific grapple';
+        this.player.techniqueTimer = 0.78;
+        this.survival.hunger = clamp(this.survival.hunger + result.nutrition, 0, 100);
+        this.survival.health = clamp(this.survival.health + result.healthRestore, 0, 100);
+        this.inventory.food += result.cachedFood;
+        this.vfx.cast('hunt', new THREE.Vector3(this.player.x, this.player.y, 0), direction);
+        this.vfx.cast('feeding', new THREE.Vector3(result.x, result.y, 3.25));
+        this.spawnBurst(result.x, result.y, '#8f3040');
+        this.sound.pulse('hunt');
+        this.recordOctoExperience('hunting', 54, `Devoured rival octopus ${result.name}`);
+        const cacheNotice = result.cachedFood > 0 ? ` Its shelter sling yields ${result.cachedFood} stored food.` : '';
+        this.setMessage(`CONSPECIFIC PREDATION · Eight arms overpower ${result.name}. +${result.nutrition} hunger, +${result.healthRestore} health.${cacheNotice}`);
+      }
+      return;
+    }
     const crabTarget = this.amphibiousCrabs.nearest(this.player.x, this.player.y, hasNet ? 2.45 : 1.48);
     if (crabTarget) {
       const crabResult = this.amphibiousCrabs.hunt({ x: this.player.x, y: this.player.y, facing: this.player.facing }, hasNet);
@@ -1709,7 +1754,6 @@ export class TidebornGame {
       this.setMessage('No crab is within reach; fish hunting requires water around the mantle.');
       return;
     }
-    const huntEfficiency = 1 - this.octipoints.effect('huntEfficiency');
     const requiredStamina = (hasNet ? 8 : 12) * huntEfficiency;
     if (this.player.stamina < requiredStamina) {
       this.setMessage('Too exhausted to pounce. Brace or drift until your arms recover.');
@@ -2999,7 +3043,10 @@ export class TidebornGame {
     const deepLife = this.deepSeaLife.snapshot(this.player.x, this.player.y);
     const deepShoals = this.deepSeaShoals.snapshot(this.player.x, this.player.y);
     const importedDeepFauna = this.importedDeepFauna.snapshot(this.player.x, this.player.y);
-    const huntCooldown = this.player.y < -14 ? deepShoals.playerHuntCooldown : marine.playerHuntCooldown;
+    const survivorTarget = this.survivorOctopi.nearest(this.player.x, this.player.y, 1.62, this.player.facing);
+    const huntCooldown = survivorTarget
+      ? this.survivorOctopi.snapshot(this.player.x, this.player.y).devourCooldown
+      : this.player.y < -14 ? deepShoals.playerHuntCooldown : marine.playerHuntCooldown;
     setText('[data-ui="hunt"]', huntCooldown <= 0 ? 'H · HUNT READY' : `H · HUNT ${huntCooldown.toFixed(1)}s`);
 
     for (const item of SUPPLY_HUD_ITEMS) setText(`[data-inv="${item.key}"]`, String(this.inventory[item.key]));
@@ -3177,6 +3224,7 @@ export class TidebornGame {
     const proceduralClams = this.proceduralClams.snapshot(this.player.x, this.player.y);
     const deepTubeWorms = this.deepTubeWorms.snapshot(this.player.x, this.player.y);
     const amphibiousCrabs = this.amphibiousCrabs.snapshot(this.player.x, this.player.y);
+    const survivorOctopi = this.survivorOctopi.snapshot(this.player.x, this.player.y);
     const loosePromptDistance = Math.min(nearby[0]?.distance ?? Infinity, nearbySupplies.nearby[0]?.distance ?? Infinity);
     const nearbyPrompt = rareRelics.nearby[0]?.distance < 1.55
       ? `Recover ${rareRelics.nearby[0].label} [E].`
@@ -3190,6 +3238,8 @@ export class TidebornGame {
       ? (proceduralClams.held ? 'Peel held clam [X/LMB].' : 'Grip clam [E], then peel [X/LMB].')
       : nearbySupplies.nearby[0]?.distance < Math.min(1.55 + this.octipoints.effect('mineralSense'), nearby[0]?.distance ?? Infinity)
       ? `Collect ${nearbySupplies.nearby[0].label} [E].`
+      : survivorOctopi.nearby[0] && Number(survivorOctopi.nearby[0].distance) < 1.62
+      ? `Devour ${survivorOctopi.nearby[0].name} [H].`
       : amphibiousCrabs.nearby[0] && Number(amphibiousCrabs.nearby[0].distance) < (this.toolbelt.isEquipped('net', this.inventory) ? 2.45 : 1.48)
       ? `Hunt ${amphibiousCrabs.nearby[0].label} [H].`
       : nearby[0]
@@ -3275,7 +3325,7 @@ export class TidebornGame {
       deepSeaLife,
       deepSeaShoals,
       importedDeepFauna,
-      survivorOctopi: this.survivorOctopi.snapshot(this.player.x, this.player.y),
+      survivorOctopi,
       rareRelics,
       proceduralClams,
       deepTubeWorms,
