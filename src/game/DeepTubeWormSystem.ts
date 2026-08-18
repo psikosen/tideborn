@@ -222,10 +222,12 @@ export class DeepTubeWormSystem {
     );
     crown.position.y = height + 0.13 * scale;
     crown.rotation.x = Math.PI;
-    const plume = new THREE.PointLight('#ff8e50', 0.22, 1.15, 2);
-    plume.position.y = height + 0.18;
+    // The vent habitat already owns a shared geothermal point light. Giving
+    // every worm another real light made every standard material evaluate
+    // roughly twenty extra light loops in the abyss. Emissive crowns keep the
+    // colony readable without multiplying the scene-wide lighting program.
     group.userData.crown = crown;
-    group.add(tube, crown, plume);
+    group.add(tube, crown);
     return group;
   }
 }

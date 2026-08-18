@@ -3,7 +3,7 @@ export const submissionAssetEntries = [
   ['models/shark-animated.glb', 'models/shark-animated.glb'],
   ['models/deep/twilight-emperor.glb', 'models/deep/twilight-emperor.glb'],
   ['models/deep/midnight-angler.glb', 'models/deep/midnight-angler.glb'],
-  ['models/deep/abyss-spinefish.glb', 'models/deep/abyss-spinefish.glb'],
+  ['models/deep/abyss-spinefish-lod.glb', 'models/deep/abyss-spinefish-lod.glb'],
   ['models/deep/hadal-stalker.glb', 'models/deep/hadal-stalker.glb'],
   ['models/deep/bloodfin-leviathan.glb', 'models/deep/bloodfin-leviathan.glb'],
 

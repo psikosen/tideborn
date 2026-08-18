@@ -9,9 +9,11 @@ interface OcclusionUpdateRequest {
 
 const TIER_SETTINGS: Record<DepthRenderTier, { pixelRatioCap: number; occlusionHz: number; litOcclusionHz: number }> = {
   surface: { pixelRatioCap: 1.5, occlusionHz: 12, litOcclusionHz: 18 },
-  aphotic: { pixelRatioCap: 1.25, occlusionHz: 10, litOcclusionHz: 16 },
+  // One stable deep-water resolution prevents expensive post-processing
+  // render-target reallocations at every canonical depth boundary.
+  aphotic: { pixelRatioCap: 1, occlusionHz: 10, litOcclusionHz: 16 },
   midnight: { pixelRatioCap: 1, occlusionHz: 9, litOcclusionHz: 15 },
-  abyssal: { pixelRatioCap: 0.9, occlusionHz: 8, litOcclusionHz: 14 },
+  abyssal: { pixelRatioCap: 1, occlusionHz: 8, litOcclusionHz: 14 },
 };
 
 /**
@@ -32,6 +34,7 @@ export class DepthPerformanceSystem {
 
   updateDepth(canonicalDepthM: number): boolean {
     const previous = this.tier;
+    const previousPixelRatioCap = TIER_SETTINGS[previous].pixelRatioCap;
 
     // Hysteresis keeps the drawing buffer from being recreated when the
     // player hovers on a depth-band boundary.
@@ -47,7 +50,7 @@ export class DepthPerformanceSystem {
       this.tier = 'midnight';
     }
 
-    return previous !== this.tier;
+    return previousPixelRatioCap !== TIER_SETTINGS[this.tier].pixelRatioCap;
   }
 
   get pixelRatioCap(): number {

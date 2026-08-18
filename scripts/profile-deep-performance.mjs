@@ -5,9 +5,14 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.TIDEBORN_PLAYWRIGHT ?? 'playwright');
 const outputDir = new URL('../output/deep-performance-profile/', import.meta.url);
 await mkdir(outputDir, { recursive: true });
+const viewportWidth = Number(process.env.TIDEBORN_PROFILE_WIDTH ?? 1440);
+const viewportHeight = Number(process.env.TIDEBORN_PROFILE_HEIGHT ?? 900);
+const deviceScaleFactor = Number(process.env.TIDEBORN_PROFILE_DPR ?? 2);
+const sampleDurationMs = Number(process.env.TIDEBORN_PROFILE_DURATION_MS ?? 1800);
+const settleDurationMs = Number(process.env.TIDEBORN_PROFILE_SETTLE_MS ?? 850);
 
 const browser = await chromium.launch({ headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader'] });
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight }, deviceScaleFactor });
 const errors = [];
 page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
 page.on('pageerror', (error) => errors.push(String(error)));
@@ -73,9 +78,9 @@ async function stage(name, species = null) {
     requestAnimationFrame(frame);
   }), durationMs);
 
-  const cold = await sampleFrames(1800);
-  await page.waitForTimeout(850);
-  const settled = await sampleFrames(1800);
+  const cold = await sampleFrames(sampleDurationMs);
+  await page.waitForTimeout(settleDurationMs);
+  const settled = await sampleFrames(sampleDurationMs);
   const state = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
   const render = await page.evaluate(() => {
     const game = window.__tidebornTest;
@@ -107,6 +112,7 @@ async function stage(name, species = null) {
 }
 
 const results = {
+  profile: { viewportWidth, viewportHeight, deviceScaleFactor, sampleDurationMs, settleDurationMs },
   coast: await stage('coast'),
   twilight: await stage('twilight', 'twilight-emperor'),
   midnight: await stage('midnight', 'midnight-angler'),

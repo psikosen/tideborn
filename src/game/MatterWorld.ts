@@ -122,6 +122,17 @@ export interface DigResult {
   fractureProgress: number;
 }
 
+export interface MatterPerformanceSnapshot {
+  simulationSteps: number;
+  movedCells: number;
+  lastStepMovedCells: number;
+  sleepingCellsSkipped: number;
+  textureUploads: number;
+  textureSyncedCells: number;
+  textureIdleFrames: number;
+  activityRule: 'wake-on-change';
+}
+
 export class MatterWorld {
   readonly width = GRID_W;
   readonly height = GRID_H;
@@ -140,6 +151,13 @@ export class MatterWorld {
   private scanParity = 0;
   private textureDirty = true;
   private rng = mulberry32(PLANET_SEED);
+  private simulationSteps = 0;
+  private movedCells = 0;
+  private lastStepMovedCells = 0;
+  private sleepingCellsSkipped = 0;
+  private textureUploads = 0;
+  private textureSyncedCells = 0;
+  private textureIdleFrames = 0;
 
   constructor() {
     this.generate();
@@ -150,6 +168,9 @@ export class MatterWorld {
     this.texture.generateMipmaps = false;
     this.texture.colorSpace = THREE.NoColorSpace;
     this.texture.needsUpdate = true;
+    // The initial pixels were synchronized immediately above. Later uploads
+    // are driven only by real cell edits or active granular motion.
+    this.textureDirty = false;
 
     this.shader = new THREE.ShaderMaterial({
       uniforms: {
@@ -316,6 +337,7 @@ export class MatterWorld {
     this.flags[index] = 0;
     this.fracture[index] = 0;
     this.textureDirty = true;
+    this.wakeAround(x, y);
     return true;
   }
 
@@ -329,6 +351,7 @@ export class MatterWorld {
     this.flags[index] = 0;
     this.fracture[index] = 0;
     this.textureDirty = true;
+    this.wakeAround(x, y);
     return true;
   }
 
@@ -379,6 +402,7 @@ export class MatterWorld {
               if (preserveDisplacedMatter && removed % 4 === 0) {
                 displaced.push(mat === MaterialId.Limestone || mat === MaterialId.Basalt ? MaterialId.Mineral : mat);
               }
+              this.wakeAround(x, y);
             }
           }
           continue;
@@ -392,6 +416,7 @@ export class MatterWorld {
         if (preserveDisplacedMatter && removed % 4 === 0) {
           displaced.push(mat === MaterialId.Limestone || mat === MaterialId.Basalt ? MaterialId.Mineral : mat);
         }
+        this.wakeAround(x, y);
       }
     }
 
@@ -408,6 +433,7 @@ export class MatterWorld {
           this.material[i] = mat;
           this.moisture[i] = this.cellToWorld(x, y).y < this.seaLevel ? 220 : 70;
           this.flags[i] = 1;
+          this.wakeAround(x, y);
           placed = true;
         }
       }
@@ -434,6 +460,7 @@ export class MatterWorld {
         if (this.material[i] === MaterialId.Empty) {
           this.material[i] = mat;
           this.flags[i] = 1;
+          this.wakeAround(x, y);
           placed += 1;
         }
       }
@@ -444,6 +471,8 @@ export class MatterWorld {
 
   step(playerX: number, playerY: number, storm: number): void {
     this.scanParity ^= 1;
+    this.simulationSteps += 1;
+    this.lastStepMovedCells = 0;
     const center = this.worldToCell(playerX, playerY);
     const minX = clamp(center.x - 100, 1, GRID_W - 2);
     const maxX = clamp(center.x + 100, 1, GRID_W - 2);
@@ -458,11 +487,20 @@ export class MatterWorld {
         const i = this.idx(x, y);
         const mat = this.material[i] as MaterialId;
         if (mat !== MaterialId.Sand && mat !== MaterialId.WetSand && mat !== MaterialId.Mud && mat !== MaterialId.Mineral && mat !== MaterialId.CrushedShell) continue;
-        if (this.flags[i] === 0 && y > minY + 3) continue;
+        // Settled terrain stays asleep regardless of camera position. The old
+        // moving bottom strip woke untouched mineral layers whenever the
+        // player descended, causing false collapses and repeated 4 MB texture
+        // uploads. Digging, placement and neighboring motion now wake only
+        // cells that can actually react.
+        if (this.flags[i] === 0) {
+          this.sleepingCellsSkipped += 1;
+          continue;
+        }
         const below = this.idx(x, y - 1);
         if (this.material[below] === MaterialId.Empty || this.material[below] === MaterialId.Water) {
           this.swap(i, below);
           this.flags[below] = 1;
+          this.lastStepMovedCells += 1;
           changed = true;
           continue;
         }
@@ -471,12 +509,14 @@ export class MatterWorld {
         if (this.material[diag] === MaterialId.Empty) {
           this.swap(i, diag);
           this.flags[diag] = 1;
+          this.lastStepMovedCells += 1;
           changed = true;
         } else if (this.rng() > 0.72) {
           const otherDiag = this.idx(x - dir, y - 1);
           if (this.material[otherDiag] === MaterialId.Empty) {
             this.swap(i, otherDiag);
             this.flags[otherDiag] = 1;
+            this.lastStepMovedCells += 1;
             changed = true;
           } else {
             this.flags[i] = 0;
@@ -504,17 +544,38 @@ export class MatterWorld {
         }
       }
     }
-    if (changed) this.textureDirty = true;
+    if (changed) {
+      this.movedCells += this.lastStepMovedCells;
+      this.textureDirty = true;
+    }
   }
 
   updateTexture(time: number, storm: number): void {
     this.shader.uniforms.uTime.value = time;
     this.shader.uniforms.uStorm.value = storm;
     this.shader.uniforms.uSeaLevel.value = this.seaLevel;
-    if (!this.textureDirty) return;
+    if (!this.textureDirty) {
+      this.textureIdleFrames += 1;
+      return;
+    }
     this.syncPixels();
     this.texture.needsUpdate = true;
+    this.textureUploads += 1;
+    this.textureSyncedCells += this.material.length;
     this.textureDirty = false;
+  }
+
+  performanceSnapshot(): MatterPerformanceSnapshot {
+    return {
+      simulationSteps: this.simulationSteps,
+      movedCells: this.movedCells,
+      lastStepMovedCells: this.lastStepMovedCells,
+      sleepingCellsSkipped: this.sleepingCellsSkipped,
+      textureUploads: this.textureUploads,
+      textureSyncedCells: this.textureSyncedCells,
+      textureIdleFrames: this.textureIdleFrames,
+      activityRule: 'wake-on-change',
+    };
   }
 
   private swap(a: number, b: number): void {
@@ -523,6 +584,31 @@ export class MatterWorld {
     [this.temperature[a], this.temperature[b]] = [this.temperature[b], this.temperature[a]];
     [this.flags[a], this.flags[b]] = [this.flags[b], this.flags[a]];
     [this.fracture[a], this.fracture[b]] = [this.fracture[b], this.fracture[a]];
+    this.wakeAroundIndex(a);
+    this.wakeAroundIndex(b);
+  }
+
+  private wakeAroundIndex(index: number): void {
+    this.wakeAround(index % GRID_W, Math.floor(index / GRID_W));
+  }
+
+  private wakeAround(x: number, y: number): void {
+    for (let oy = -1; oy <= 1; oy += 1) {
+      for (let ox = -1; ox <= 1; ox += 1) {
+        const cellX = x + ox;
+        const cellY = y + oy;
+        if (!this.inBounds(cellX, cellY)) continue;
+        const index = this.idx(cellX, cellY);
+        const material = this.material[index] as MaterialId;
+        if (material === MaterialId.Sand
+          || material === MaterialId.WetSand
+          || material === MaterialId.Mud
+          || material === MaterialId.Mineral
+          || material === MaterialId.CrushedShell) {
+          this.flags[index] = 1;
+        }
+      }
+    }
   }
 
   private hardness(mat: MaterialId): number {

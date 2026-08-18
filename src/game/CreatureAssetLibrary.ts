@@ -117,7 +117,9 @@ const DEFINITIONS: Record<CreatureAssetId, CreatureAssetDefinition> = {
     emissiveIntensity: 0.12,
   },
   'abyss-spinefish': {
-    url: './assets/models/deep/abyss-spinefish.glb',
+    // Offline meshoptimizer LOD: same supplied art/materials at 28% of the
+    // source triangle count, avoiding a major first-abyss rendering spike.
+    url: './assets/models/deep/abyss-spinefish-lod.glb',
     targetLength: 2.5,
     rotateY: -0.86,
     emissiveColor: '#123e72',

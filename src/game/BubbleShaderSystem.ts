@@ -130,6 +130,8 @@ export class BubbleShaderSystem {
 
   update(elapsed: number, drawingBufferHeight: number, viewHeight: number, ambientLight: number): void {
     this.ambientLight = THREE.MathUtils.clamp(ambientLight, 0, 1);
+    const visible = this.ambientLight > 0.015;
+    for (const root of this.roots) root.visible = visible;
     this.material.uniforms.uTime.value = elapsed;
     this.material.uniforms.uPointScale.value = drawingBufferHeight / Math.max(1, viewHeight);
     this.material.uniforms.uAmbient.value = this.ambientLight;

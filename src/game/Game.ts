@@ -395,6 +395,8 @@ export class TidebornGame {
   };
   private debugFastTime = false;
   private bloomPass!: UnrealBloomPass;
+  private renderWidth = 0;
+  private renderHeight = 0;
   private reducedBloom = false;
   private uiAccumulator = 0;
   private readonly shallowFogColor = new THREE.Color('#08252c');
@@ -2515,7 +2517,10 @@ export class TidebornGame {
     this.darknessMaterial.uniforms.uHaloRadius.value = (stableDenLight ? 4.35 : 6.15) + lensBonus;
     this.darknessMaterial.uniforms.uLightStrength.value = (stableDenLight ? 0.62 : 0.82) * sourceBrightness;
     this.darknessMaterial.uniforms.uStableBiolight.value = stableDenLight ? 1 : 0;
-    this.bloomPass.enabled = depthDarkness < 0.9 || hasBiolight;
+    // The darkness halo, emissive organisms and additive vent effects retain
+    // readable biological light without paying for a full-screen multi-pass
+    // blur in the abyss. Bloom remains a shallow/twilight accent only.
+    this.bloomPass.enabled = depthDarkness < 0.82;
     this.bloomPass.strength = (this.reducedBloom ? 0.08 : 0.24) * (1 - depthDarkness * 0.38);
     this.darknessMaterial.uniforms.uLightCenter.value.set(
       0.5 + (lightX - this.camera.position.x) / 40,
@@ -3086,16 +3091,27 @@ export class TidebornGame {
     this.renderPixelRatio = requestedPixels > MAX_RENDER_PIXELS
       ? requestedRatio * Math.sqrt(MAX_RENDER_PIXELS / requestedPixels)
       : requestedRatio;
-    this.renderer.setPixelRatio(this.renderPixelRatio);
-    this.renderer.setSize(width, height, false);
+    const ratioChanged = Math.abs(this.renderer.getPixelRatio() - this.renderPixelRatio) > 0.001;
+    const sizeChanged = width !== this.renderWidth || height !== this.renderHeight;
+    // setPixelRatio already reallocates at the renderer/composer's remembered
+    // logical size. Avoid immediately allocating the same targets a second
+    // time when only a depth budget changed.
+    if (ratioChanged) {
+      this.renderer.setPixelRatio(this.renderPixelRatio);
+      this.composer?.setPixelRatio(this.renderPixelRatio);
+    }
+    if (sizeChanged) {
+      this.renderer.setSize(width, height, false);
+      this.composer?.setSize(width, height);
+      this.renderWidth = width;
+      this.renderHeight = height;
+    }
     const aspect = width / Math.max(1, height);
     this.camera.left = (-this.viewHeight * aspect) / 2;
     this.camera.right = (this.viewHeight * aspect) / 2;
     this.camera.top = this.viewHeight / 2;
     this.camera.bottom = -this.viewHeight / 2;
     this.camera.updateProjectionMatrix();
-    this.composer?.setPixelRatio(this.renderPixelRatio);
-    this.composer?.setSize(width, height);
   }
 
   private render(): void {
@@ -3200,6 +3216,7 @@ export class TidebornGame {
           textures: this.renderer.info.memory.textures,
           shaderPrograms: this.renderer.info.programs?.length ?? 0,
         },
+        matter: this.world.performanceSnapshot(),
       },
       oceanSurface: this.oceanSurface.snapshot(),
       mobileCamera: {
