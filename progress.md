@@ -626,3 +626,8 @@ Original prompt: Create a new `Tideborn` project: a Three.js/HTML5 2.5D granular
 - Diagnosed `abyss-spinefish.glb` as a Sketchfab collection containing ten widely separated fish rather than one gameplay creature. Added a reproducible Meshoptimizer step that preserves the original source, selects the authored `FishLOW_0` specimen, reduces its active mesh from 14,942 to 8,946 triangles, and ships `abyss-spinefish-lod.glb`. Visual verification now shows one recognizable broadside fish instead of a compressed blue model bundle.
 - Under the same 960×600 DPR-1 SwiftShader stress profile, steady twilight improved from 6.3 to 17.1 fps, midnight from 6.2 to 13.4 fps, abyss from 3.9 to 15.2 fps, and hadal from 3.7 to 9.0 fps. These absolute software-renderer numbers are intentionally pessimistic; the relative comparison uses identical conditions.
 - Production build, bare-arm clay breakthrough, imported deep-fauna, tube-worm/clam behavior, granular wake behavior, and the standard gameplay client all pass with zero browser errors. The standard client reached `mode: playing`, moved/swarmed normally, and reported zero material uploads while terrain remained untouched.
+
+## 2026-08-18 — Development server restored
+
+- Confirmed the reported `localhost:4173` outage: no process was listening on the development port. Restarted Vite on port 4173 and verified an HTTP 200 response.
+- The standard gameplay client reached `mode: playing`, moved the octopus through live coastal water, and reported zero browser errors. Visual evidence is in `output/server-restart-check/shot-0.png`.
