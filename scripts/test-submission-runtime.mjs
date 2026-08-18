@@ -57,7 +57,8 @@ page.on('pageerror', (error) => pageErrors.push(String(error)));
 page.on('request', (request) => {
   if (!request.url().startsWith(origin)) externalRequests.push(request.url());
 });
-page.on('requestfailed', (request) => failedRequests.push(`${request.url()} — ${request.failure()?.errorText}`));
+const recordDesktopRequestFailure = (request) => failedRequests.push(`${request.url()} — ${request.failure()?.errorText}`);
+page.on('requestfailed', recordDesktopRequestFailure);
 await page.route('**', async (route) => {
   if (route.request().url().startsWith(origin)) await route.continue();
   else await route.abort('internetdisconnected');
@@ -76,14 +77,20 @@ try {
   await page.waitForTimeout(220);
   await page.keyboard.up('ArrowRight');
   await page.waitForTimeout(180);
+  await page.waitForFunction(() => {
+    const assets = JSON.parse(window.render_game_to_text()).creatureAssets;
+    return assets.loaded.includes('shark') && assets.failed.length === 0;
+  }, undefined, { timeout: 90_000 });
   state = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
   await page.waitForLoadState('networkidle', { timeout: 30_000 });
   await page.screenshot({ path: new URL('standalone-gameplay.png', output).pathname, fullPage: true, scale: 'css', timeout: 90_000 });
+  await page.waitForLoadState('networkidle', { timeout: 30_000 });
 } catch (error) {
   runtimeError = String(error);
   documentExcerpt = (await page.content().catch(() => '')).slice(0, 1_500);
   await page.screenshot({ path: new URL('standalone-failure.png', output).pathname, fullPage: true }).catch(() => {});
 }
+page.off('requestfailed', recordDesktopRequestFailure);
 await context.close();
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 430, height: 932 }]) {
@@ -101,7 +108,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 430, height: 932 }
   portraitPage.on('request', (request) => {
     if (!request.url().startsWith(origin)) externalRequests.push(request.url());
   });
-  portraitPage.on('requestfailed', (request) => failedRequests.push(`${request.url()} — ${request.failure()?.errorText}`));
+  const recordPortraitRequestFailure = (request) => failedRequests.push(`${viewport.width}x${viewport.height}: ${request.url()} — ${request.failure()?.errorText}`);
+  portraitPage.on('requestfailed', recordPortraitRequestFailure);
   await portraitPage.route('**', async (route) => {
     if (route.request().url().startsWith(origin)) await route.continue();
     else await route.abort('internetdisconnected');
@@ -141,6 +149,10 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 430, height: 932 }
   await portraitPage.locator('[data-mobile-action="jet"]').click();
   await portraitPage.locator('[data-tool-slot="0"]').click();
   await portraitPage.waitForTimeout(160);
+  await portraitPage.waitForFunction(() => {
+    const assets = JSON.parse(window.render_game_to_text()).creatureAssets;
+    return assets.loaded.includes('shark') && assets.failed.length === 0;
+  }, undefined, { timeout: 90_000 });
   const after = JSON.parse(await portraitPage.evaluate(() => window.render_game_to_text()));
   if (after.player.x <= before.player.x) throw new Error(`Packaged portrait movement failed at ${viewport.width}x${viewport.height}.`);
   if (after.player.jetCharges >= before.player.jetCharges) throw new Error(`Packaged portrait Jet button failed at ${viewport.width}x${viewport.height}.`);
@@ -162,7 +174,9 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 430, height: 932 }
   // context shutdown is not misreported as an offline asset failure.
   await portraitPage.waitForLoadState('networkidle', { timeout: 30_000 });
   await portraitPage.screenshot({ path: new URL(`standalone-portrait-${viewport.width}x${viewport.height}.png`, output).pathname, fullPage: true, scale: 'css', timeout: 90_000 });
+  await portraitPage.waitForLoadState('networkidle', { timeout: 30_000 });
   portraitResults.push({ viewport, mode: after.mode, mobileCamera: after.mobileCamera, playerMovedM: Number((after.player.x - before.player.x).toFixed(2)), jetCharges: after.player.jetCharges, geometry });
+  portraitPage.off('requestfailed', recordPortraitRequestFailure);
   await portraitContext.close();
 }
 
