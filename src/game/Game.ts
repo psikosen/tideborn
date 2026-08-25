@@ -16,7 +16,7 @@ import { DepthAccessSystem, DepthRouteState } from './DepthAccessSystem';
 import { DepthPerformanceSystem } from './DepthPerformanceSystem';
 import { PLANET_DEPTH_BANDS, PlanetScaleSystem } from './PlanetScale';
 import { PlanetBeltTraversalSystem } from './PlanetBeltTraversalSystem';
-import { TOOL_DEFINITIONS, ToolbeltSystem } from './ToolbeltSystem';
+import { TOOL_DEFINITIONS, ToolbeltSystem, type ToolId } from './ToolbeltSystem';
 import { TechniqueVFXSystem } from './VFXSystem';
 import { CreatureAssetLibrary } from './CreatureAssetLibrary';
 import { BiologicalSex, CreatureLifecycleSystem, LifeHistory } from './CreatureLifecycleSystem';
@@ -40,6 +40,22 @@ import { OCTIPOINT_BRANCHES, OCTIPOINT_NODES, OctipointActivity, OctipointSystem
 import { SupplyCollectibleSystem } from './SupplyCollectibleSystem';
 import { BubbleShaderSystem } from './BubbleShaderSystem';
 import { OceanSurfaceSystem } from './OceanSurfaceSystem';
+import { ToolUseVisualSystem, type ToolUseAction } from './ToolUseVisualSystem';
+import { DenDecorationSystem, type DenDecorationKind } from './DenDecorationSystem';
+import { ThunderstormVFXSystem } from './ThunderstormVFXSystem';
+import { WorldMapSystem } from './WorldMapSystem';
+import { GameAudioSystem } from './GameAudioSystem';
+import { SaveLoadSystem, AUTOSAVE_SLOT } from './SaveLoadSystem';
+import { DenBuilderSystem } from './DenBuilderSystem';
+import { EcologyJournal } from './EcologyJournal';
+import { VibrationSenseSystem } from './VibrationSenseSystem';
+import { HuntingFeedbackSystem } from './HuntingFeedbackSystem';
+import { SurvivorRelationsSystem } from './SurvivorRelationsSystem';
+import { SeasonalWorldEffectsSystem } from './SeasonalWorldEffectsSystem';
+import { DiscoveryLoreSystem } from './DiscoveryLoreSystem';
+import { OnboardingTutorialSystem } from './OnboardingTutorialSystem';
+import { AccessibilitySettingsSystem } from './AccessibilitySettingsSystem';
+import { setPredatorAlertIntensity } from './PredatorAlertVisual';
 import {
   BASE_SEA_LEVEL,
   CreatureState,
@@ -91,6 +107,8 @@ const STORM_PEAK = DAY_LENGTH * 3.075;
 const STORM_END = DAY_LENGTH * 3.425;
 const FIXED_DT = 1 / 60;
 const MAX_RENDER_PIXELS = 2560 * 1440;
+const NORMAL_DIG_POWER_MULTIPLIER = 2.2;
+const DIG_RADIUS_MULTIPLIER = 1.3;
 
 const SUPPLY_HUD_ITEMS: Array<{ key: ResourceKey; label: string; icon: string }> = [
   { key: 'food', label: 'Fresh food', icon: './assets/resources/food.png' },
@@ -111,6 +129,15 @@ const SUPPLY_HUD_ITEMS: Array<{ key: ResourceKey; label: string; icon: string }>
   { key: 'adhesive', label: 'Mussel bio-adhesive', icon: './assets/resources/adhesive.png' },
   { key: 'pumice', label: 'Vent pumice', icon: './assets/resources/pumice.png' },
 ];
+
+const CRAFT_RESOURCE_FALLBACK_ICONS: Partial<Record<ResourceKey, string>> = {
+  sharpShell: './assets/resources/large-shell.png',
+  shellFragments: './assets/resources/crab-carapace.png',
+  storageSling: './assets/resources/rope.png',
+  kelpCurtain: './assets/resources/kelp.png',
+  tunnelBrace: './assets/resources/wood.png',
+  shellBowl: './assets/resources/large-shell.png',
+};
 
 const SURFACE_LIFE_HISTORIES: Record<SurfaceCreatureKind, LifeHistory> = {
   bird: { lifespanYears: [8, 18], maturityYears: [1, 2], adultScale: [0.72, 1.34], breedingIntervalYears: [0.8, 1.5], broodSize: [1, 2], maxPopulation: 9 },
@@ -230,51 +257,6 @@ const vegetationFragment = /* glsl */ `
   }
 `;
 
-class Soundscape {
-  private ctx?: AudioContext;
-  private master?: GainNode;
-
-  start(): void {
-    if (this.ctx) return;
-    this.ctx = new AudioContext();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = 0.13;
-    this.master.connect(this.ctx.destination);
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = 48;
-    gain.gain.value = 0.025;
-    osc.connect(gain).connect(this.master);
-    osc.start();
-  }
-
-  pulse(kind: 'jet' | 'blast' | 'ink' | 'dig' | 'gather' | 'hunt' | 'craft' | 'storm'): void {
-    if (!this.ctx || !this.master) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    const now = this.ctx.currentTime;
-    const config = {
-      jet: [100, 46, 0.16],
-      blast: [138, 31, 0.48],
-      ink: [82, 31, 0.42],
-      dig: [72, 45, 0.08],
-      gather: [310, 480, 0.12],
-      hunt: [185, 520, 0.18],
-      craft: [220, 660, 0.24],
-      storm: [58, 27, 0.6],
-    }[kind];
-    osc.type = kind === 'dig' || kind === 'storm' ? 'sawtooth' : 'sine';
-    osc.frequency.setValueAtTime(config[0], now);
-    osc.frequency.exponentialRampToValueAtTime(config[1], now + config[2]);
-    gain.gain.setValueAtTime(0.07, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + config[2]);
-    osc.connect(gain).connect(this.master);
-    osc.start(now);
-    osc.stop(now + config[2]);
-  }
-}
-
 export class TidebornGame {
   private root: HTMLElement;
   private renderer: THREE.WebGLRenderer;
@@ -309,6 +291,27 @@ export class TidebornGame {
   private deepTubeWorms!: DeepTubeWormSystem;
   private amphibiousCrabs!: AmphibiousCrabSystem;
   private vfx!: TechniqueVFXSystem;
+  private toolUseVisuals!: ToolUseVisualSystem;
+  private denDecorations!: DenDecorationSystem;
+  private denBuilder!: DenBuilderSystem;
+  private saveLoad!: SaveLoadSystem;
+  private ecologyJournal = new EcologyJournal();
+  private vibrationSense!: VibrationSenseSystem;
+  private vibrationSpeedFactor = 1;
+  private lastFrameDt = 1 / 60;
+  private huntingFeedback!: HuntingFeedbackSystem;
+  private survivorRelations!: SurvivorRelationsSystem;
+  private seasonalWorld!: SeasonalWorldEffectsSystem;
+  private discoveries!: DiscoveryLoreSystem;
+  private tutorial = new OnboardingTutorialSystem();
+  private accessibility!: AccessibilitySettingsSystem;
+  private lastJetPulseElapsed = -99;
+  private lastBirdPhase: 'present' | 'leaving' | 'gone' | 'returning' = 'present';
+  private ecoSampleAccumulator = 0;
+  private lastBiteWindow: { id: string; px: number; py: number; t: number } | null = null;
+  private cameraShakePhase = 0;
+  private ecoBaseline: EcosystemState = { kelpCover: 100, shellfish: 320, smallFish: 740, birds: 22, snakes: 5, sedimentStability: 100 };
+  private thunderstorm!: ThunderstormVFXSystem;
   private creatureAssets = new CreatureAssetLibrary();
   private marineLife!: MarineLifeSystem;
   private deepSeaLife!: DeepSeaLifeSystem;
@@ -324,6 +327,7 @@ export class TidebornGame {
   private inventory: Inventory = { ...EMPTY_INVENTORY };
   private toolbelt = new ToolbeltSystem();
   private denNetwork = new DenNetworkSystem();
+  private worldMap = new WorldMapSystem();
   private seasonSystem = new SeasonSystem(DAY_LENGTH, STORM_END);
   private seasonalMoisture = new SeasonalMoistureSystem();
   private moistureEnvironment: SeasonalMoistureState = this.seasonalMoisture.sample({
@@ -365,7 +369,7 @@ export class TidebornGame {
   private excavatedCellsForExperience = 0;
   private abyssEntered = false;
   private rng = mulberry32(PLANET_SEED + 99);
-  private sound = new Soundscape();
+  private sound = new GameAudioSystem();
   private ui!: HTMLElement;
   private menu!: HTMLElement;
   private craftPanel!: HTMLElement;
@@ -384,7 +388,6 @@ export class TidebornGame {
   private denBiolightVisuals = new Map<string, THREE.Group[]>();
   private sun!: THREE.Mesh;
   private moon!: THREE.Mesh;
-  private lightning!: THREE.PointLight;
   private cameraTarget = new THREE.Vector2(-8, 2.8);
   private viewHeight = 18;
   private mobileCamera = {
@@ -421,15 +424,22 @@ export class TidebornGame {
     this.camera.lookAt(-8, 2.8, 0);
     this.scene.fog = new THREE.FogExp2('#08252c', 0.008);
     this.buildScene();
+    this.thunderstorm = new ThunderstormVFXSystem(this.scene, this.rng);
     this.pointerAim = new PointerAimSystem(this.scene);
     this.trees = new ProceduralTreeSystem(this.scene, this.world, PLANET_SEED + 911);
     this.treeInteraction.setBodies(this.trees.interactionBodies());
     this.survivorOctopi = new SurvivorOctopusSystem(this.scene, this.world, this.creatureAssets);
+    this.survivorRelations = new SurvivorRelationsSystem();
     this.cryosphere = new SeasonalCryosphereSystem(this.scene, this.world, PLANET_SEED + 5081);
+    this.seasonalWorld = new SeasonalWorldEffectsSystem(this.scene);
     this.vfx = new TechniqueVFXSystem(this.scene, PLANET_SEED + 418);
+    this.toolUseVisuals = new ToolUseVisualSystem(this.scene);
+    this.denDecorations = new DenDecorationSystem(this.scene);
     this.minerals = new MineralResourceSystem(this.scene, this.rng);
     this.supplies = new SupplyCollectibleSystem(this.scene);
     this.relics = new RareRelicSystem(this.scene, this.rng);
+    this.discoveries = new DiscoveryLoreSystem(this.scene, (x: number, y: number) => this.world.getMaterial(x, y));
+    this.huntingFeedback = new HuntingFeedbackSystem(this.scene);
     this.proceduralClams = new ProceduralClamSystem(this.scene, this.world, PLANET_SEED + 6329);
     this.deepTubeWorms = new DeepTubeWormSystem(this.scene, PLANET_SEED + 7733);
     this.amphibiousCrabs = new AmphibiousCrabSystem(
@@ -437,7 +447,6 @@ export class TidebornGame {
       mulberry32(PLANET_SEED + 9017),
       this.creatureAssets,
       this.world,
-      this.treeInteraction,
     );
     this.buildWorldEntities();
     this.marineLife = new MarineLifeSystem(this.scene, this.rng, this.creatureAssets, this.world);
@@ -448,16 +457,215 @@ export class TidebornGame {
     this.buildCreatures();
     this.setupPostProcessing();
     this.buildUI();
+    this.vibrationSense = new VibrationSenseSystem(this.scene, (x: number, y: number) => this.world.getMaterial(x, y));
+    this.denBuilder = new DenBuilderSystem(this.scene, (x: number, y: number) => this.world.getMaterial(x, y), this.ui);
+    this.accessibility = new AccessibilitySettingsSystem(this.root);
+    this.accessibility.apply();
+    this.accessibility.subscribe((settings) => setPredatorAlertIntensity(settings.predatorAlertIntensity));
+    setPredatorAlertIntensity(this.accessibility.get('predatorAlertIntensity'));
+    this.huntingFeedback.attachUiRoot(this.ui);
+    this.survivorRelations.attachUiRoot(this.ui);
+    this.survivorRelations.setActionHandlers({
+      trade: (id) => {
+        const result = this.survivorRelations.acceptTrade(id, 'food');
+        if (!result.accepted || !result.gainedItem) {
+          this.setMessage(result.detail);
+          return;
+        }
+        if (this.inventory.food < 1) {
+          this.setMessage('You have no fresh food to seal the trade.');
+          return;
+        }
+        this.inventory.food -= 1;
+        this.inventory[result.gainedItem] += result.gainedQty ?? 1;
+        this.recordOctoExperience('foraging', 12, 'Traded food with a neighboring octopus');
+        this.setMessage(`${result.detail} [E] nearby to gather more.`);
+      },
+      gift: (id) => {
+        if (this.inventory.food < 1) {
+          this.setMessage('You have no fresh food to give.');
+          return;
+        }
+        this.inventory.food -= 1;
+        const result = this.survivorRelations.offerFoodGift(id);
+        this.setMessage(result.detail);
+      },
+      mate: (id) => {
+        const result = this.survivorRelations.tryMate(id);
+        if (result.accepted) this.recordOctoExperience('survival', 40, 'Bonded with a survivor octopus');
+        this.setMessage(result.detail);
+      },
+    });
+    this.tutorial.attachUiRoot(this.ui);
+    this.tutorial.setSeaLevel(BASE_SEA_LEVEL);
+    this.setupSaveLoad();
+    this.load();
+    this.worldMap.visit(this.player.x, this.player.y);
+    this.refreshWorldMap();
     this.bindInput();
     this.resize();
     this.updateUI();
     this.render();
+
+    // Decode large deep-fauna assets sequentially while the player is still
+    // at the title/coast, rather than hitching on each depth-band crossing.
+    // Full local desktop builds trade spare memory for a hitch-free descent.
+    // Coarse-pointer/mobile and contest-safe sessions keep models lazy so the
+    // title screen does not decode every specimen into a constrained budget.
+    if (!window.matchMedia('(pointer: coarse)').matches) {
+      this.creatureAssets.preloadStaggered([
+        'twilight-emperor', 'midnight-angler', 'abyss-spinefish', 'hadal-stalker',
+      ]);
+    }
 
     window.addEventListener('resize', () => this.resize());
     document.addEventListener('fullscreenchange', () => this.resize());
 
     (window as unknown as { render_game_to_text: () => string }).render_game_to_text = () => this.renderGameToText();
     (window as unknown as { advanceTime: (ms: number) => void }).advanceTime = (ms: number) => this.advanceTime(ms);
+    (window as unknown as { tidebornSave: SaveLoadSystem }).tidebornSave = this.saveLoad;
+  }
+
+  private setupSaveLoad(): void {
+    this.saveLoad = new SaveLoadSystem({
+      getElapsedSeconds: () => this.elapsed,
+      getDayNumber: () => Math.floor(Math.max(0, this.elapsed) / DAY_LENGTH),
+      getPlaytimeSeconds: () => this.elapsed,
+    });
+    this.saveLoad.register('core', {
+      save: () => ({
+        elapsed: this.elapsed,
+        player: { x: this.player.x, y: this.player.y },
+        inventory: { ...this.inventory },
+        gathered: this.entities.filter((entity) => entity.gathered).map((entity) => entity.id),
+        survival: { ...this.survival },
+      }),
+      load: (data) => {
+        const section = data as {
+          elapsed?: unknown; player?: { x?: unknown; y?: unknown }; inventory?: unknown;
+          gathered?: unknown; survival?: Partial<SurvivalState>;
+        };
+        if (typeof section.elapsed === 'number' && Number.isFinite(section.elapsed)) {
+          this.elapsed = section.elapsed;
+          this.nextAutosave = this.elapsed + 10;
+        }
+        if (typeof section.player?.x === 'number' && typeof section.player?.y === 'number') {
+          this.player.x = section.player.x;
+          this.player.y = section.player.y;
+          this.cameraTarget.set(this.player.x, this.player.y);
+        }
+        if (section.inventory && typeof section.inventory === 'object') {
+          const saved = Object.fromEntries(
+            Object.entries(section.inventory as Record<string, unknown>).filter(([, value]) => typeof value === 'number'),
+          ) as Partial<Inventory>;
+          this.inventory = { ...EMPTY_INVENTORY, ...saved };
+        }
+        if (Array.isArray(section.gathered)) {
+          const ids = new Set(section.gathered.filter((id): id is string => typeof id === 'string'));
+          for (const entity of this.entities) if (ids.has(entity.id)) entity.gathered = true;
+        }
+        if (section.survival && typeof section.survival === 'object') {
+          for (const [key, value] of Object.entries(section.survival)) {
+            if (typeof value === 'number') this.survival[key as keyof SurvivalState] = clamp(value, 0, key === 'pressure' ? 400 : 100);
+          }
+        }
+      },
+    });
+    this.saveLoad.register('ecosystem', {
+      save: () => ({ ...this.ecosystem }),
+      load: (data) => {
+        const section = data as Record<string, unknown>;
+        if (typeof section !== 'object' || section === null) return;
+        for (const key of Object.keys(this.ecosystem) as Array<keyof EcosystemState>) {
+          const value = section[key];
+          if (typeof value === 'number' && Number.isFinite(value)) this.ecosystem[key] = clamp(value, 0, key === 'smallFish' || key === 'shellfish' ? 2000 : 100);
+        }
+      },
+    });
+    this.saveLoad.register('progression', {
+      save: () => ({
+        jetBlastMastery: this.jetBlast.mastery,
+        equippedTool: this.toolbelt.snapshot(this.inventory).selected,
+      }),
+      load: (data) => {
+        const section = data as { jetBlastMastery?: unknown; equippedTool?: unknown };
+        if (typeof section.jetBlastMastery === 'number') {
+          this.jetBlast.mastery = clamp(section.jetBlastMastery, 0, this.jetBlast.masteryRequired);
+        }
+        if (typeof section.equippedTool === 'string' && TOOL_DEFINITIONS.some((definition) => definition.id === section.equippedTool)) {
+          this.toolbelt.select(section.equippedTool as ToolId, this.inventory);
+        }
+      },
+    });
+    this.saveLoad.register('octipoints', {
+      save: () => this.octipoints.serialize(),
+      load: (data) => this.octipoints.deserialize(data),
+    });
+    this.saveLoad.register('map', {
+      save: () => this.worldMap.serialize(),
+      load: (data) => this.worldMap.deserialize(data),
+    });
+    this.saveLoad.register('dens', {
+      save: () => this.denNetwork.serializeState(),
+      load: (data) => this.denNetwork.deserializeState(data),
+    });
+    this.saveLoad.register('excavation', {
+      save: () => this.world.serializeModifiedCells(),
+      load: (data) => this.world.importModifiedCells(data),
+    });
+    this.saveLoad.register('groundDrops', {
+      save: () => ({
+        minerals: this.minerals.serializeDrops(),
+        relics: this.relics.serializeDrops(),
+        collectedSupplies: this.supplies.serializeCollected(),
+      }),
+      load: (data) => {
+        const section = data as { minerals?: unknown; relics?: unknown; collectedSupplies?: unknown };
+        if (Array.isArray(section.minerals)) this.minerals.deserializeDrops(section.minerals);
+        if (section.relics) this.relics.deserializeDrops(section.relics);
+        if (Array.isArray(section.collectedSupplies)) this.supplies.deserializeCollected(section.collectedSupplies);
+      },
+    });
+    this.saveLoad.register('denBuilder', {
+      save: () => this.denBuilder.serialize(),
+      load: (data) => this.denBuilder.deserialize(typeof data === 'string' ? data : null),
+    });
+    this.saveLoad.register('ecologyJournal', {
+      save: () => this.ecologyJournal.serialize(),
+      load: (data) => this.ecologyJournal.deserialize(data),
+    });
+    this.saveLoad.register('huntingFeedback', {
+      save: () => this.huntingFeedback.serialize(),
+      load: (data) => this.huntingFeedback.deserialize(data),
+    });
+    this.saveLoad.register('survivorRelations', {
+      save: () => this.survivorRelations.serialize(),
+      load: (data) => this.survivorRelations.deserialize(data),
+    });
+    this.saveLoad.register('vibrationSense', {
+      save: () => this.vibrationSense.serialize(),
+      load: (data) => this.vibrationSense.deserialize(data),
+    });
+    this.saveLoad.register('seasonalWorld', {
+      save: () => this.seasonalWorld.serialize(),
+      load: (data) => this.seasonalWorld.deserialize(data),
+    });
+    this.saveLoad.register('discoveries', {
+      save: () => this.discoveries.serialize(),
+      load: (data) => this.discoveries.deserialize(data),
+    });
+    this.saveLoad.register('tutorial', {
+      save: () => this.tutorial.serialize(),
+      load: (data) => this.tutorial.deserialize(data),
+    });
+  }
+
+  private load(): void {
+    const result = this.saveLoad.restore(AUTOSAVE_SLOT);
+    if (!result.ok) return;
+    this.tutorial.setSeaLevel(BASE_SEA_LEVEL);
+    this.worldMap.visit(this.player.x, this.player.y);
+    this.refreshWorldMap();
   }
 
   startLoop(): void {
@@ -535,10 +743,6 @@ export class TidebornGame {
     this.createAtmospherics();
     this.scene.add(this.player.group);
     this.buildDepthLighting();
-
-    this.lightning = new THREE.PointLight('#ccf8ff', 0, 35);
-    this.lightning.position.set(-8, 9, 7);
-    this.scene.add(this.lightning);
 
     const ventLight = new THREE.PointLight('#ff633c', 2.7, 8, 1.6);
     ventLight.position.set(HADAL_VENT_X, HADAL_VENT_Y - 1.8, 4);
@@ -942,11 +1146,12 @@ export class TidebornGame {
         <div>${MINERAL_DEFINITIONS.map((mineral) => `<div class="mineral-count" title="${mineral.label} · ${mineral.use}"><img src="${mineral.icon}" alt=""><b data-inv="${mineral.id}">0</b></div>`).join('')}</div>
       </div>
       <div class="tool-hotbar" data-ui="hud">
-        <div class="hotbar-readout"><span>ON DECK</span><b data-hotbar-label>BARE ARMS</b><kbd>TAB · SWITCH</kbd></div>
+        <div class="hotbar-readout"><span>ON DECK</span><b data-hotbar-label>BARE ARMS</b><kbd>TAB · SWITCH</kbd><button data-craft-toggle aria-label="Open crafting menu" aria-expanded="false"><span>CRAFT</span><kbd>I</kbd></button></div>
         <div class="hotbar-slots" role="toolbar" aria-label="Tool belt"></div>
       </div>
-      <div class="technique panel" data-ui="hud"><div class="eyebrow">CURRENT TECHNIQUE</div><strong data-ui="technique">swim</strong><span data-ui="tool">bare arms · I craft</span><em data-ui="octipoints">O · OCTIPOINTS 1 · 0/100 XP</em><em data-ui="den">DEN NETWORK · 0 FOUND</em><em data-ui="biolight">DEEP LIGHT · NONE</em><em data-ui="stealth">G · GRIP + HIDE · C · CAMO</em><em data-ui="jet">SHIFT · JETS 3/3</em><em data-ui="blast">RMB / K · JET BLAST 0%</em><em data-ui="hunt">H · HUNT READY</em><em data-ui="ink">R · INK READY</em></div>
+      <div class="technique panel" data-ui="hud"><div class="eyebrow">CURRENT TECHNIQUE</div><strong data-ui="technique">swim</strong><span data-ui="tool">bare arms · I craft</span><em data-ui="octipoints">O · OCTIPOINTS 1 · 0/140 XP</em><em data-ui="den">DEN NETWORK · 0 FOUND</em><em data-ui="biolight">DEEP LIGHT · NONE</em><em data-ui="stealth">G · GRIP + HIDE · C · CAMO</em><em data-ui="jet">SHIFT · JETS 3/3</em><em data-ui="blast">RMB / K · JET BLAST 0%</em><em data-ui="hunt">H · HUNT READY</em><em data-ui="ink">R · INK READY</em></div>
       <button class="settings-toggle panel" data-settings-toggle aria-label="Open settings and Octipoint grid"><span>◉</span><b data-octopoint-badge>1</b><small>O · ADAPT</small></button>
+      <button class="map-toggle panel" data-map-toggle aria-label="Open fog-of-war world map" aria-expanded="false"><span>⌖</span><small>M · MAP</small></button>
       <div class="prompt panel" data-ui="prompt"></div>
       <div class="banner" data-ui="banner"><div class="eyebrow">TIDEBORN</div><h3></h3><p></p></div>
       <div class="pause-chip panel" data-ui="pause">PAUSED · PRESS ESC</div>
@@ -959,8 +1164,18 @@ export class TidebornGame {
           <button data-play-again aria-label="Play Tideborn again" style="min-width:210px;min-height:58px;padding:14px 28px;border-radius:999px;font:inherit;font-weight:800;letter-spacing:.08em;cursor:pointer;pointer-events:auto;touch-action:manipulation;">PLAY AGAIN</button>
         </div>
       </section>
-      <aside class="planet-atlas panel" data-ui="atlas">
-        <div class="atlas-head"><div><div class="eyebrow">PELAGOS-730 · PLANETARY BELT</div><h2>World scale</h2></div><span>M · CLOSE</span></div>
+      <aside class="planet-atlas panel" data-ui="atlas" aria-label="Fog-of-war world map" aria-hidden="true">
+        <div class="atlas-head"><div><div class="eyebrow">PELAGOS-730 · WRAPPED PLANETARY BELT</div><h2>Exploration map</h2><p>Whole-world 2D slice · longitude wraps at both edges</p></div><button data-close-atlas aria-label="Close world map">×</button></div>
+        <div class="world-map-shell">
+          <canvas data-world-map width="900" height="460" aria-label="Explored world map with fog of war, player position, and den markers">Your browser does not support the exploration map.</canvas>
+          <div class="world-map-key" aria-hidden="true"><span><i class="map-key-player"></i>YOU</span><span><i class="map-key-den"></i>DEN</span><span><i class="map-key-fog"></i>UNKNOWN</span></div>
+        </div>
+        <div class="world-map-readout">
+          <div><b data-map-progress>0% CHARTED</b><small data-map-cells>0 / 4096 MAP SECTORS</small></div>
+          <div><b data-map-location>COASTAL SHELF</b><small data-map-coordinates>0 KM LONGITUDE · 0 M DEPTH</small></div>
+          <div><b data-map-den-count>0 DENS MARKED</b><small>Only discovered shelters are recorded</small></div>
+        </div>
+        <div class="world-map-dens" data-map-dens><span>No dens marked yet. Enter or claim a sheltered chamber.</span></div>
         <div class="planet-compare">
           <div><b>${scale.planet.radiusKm.toLocaleString()} km</b><small>radius · ${scale.comparison.earthRadius} Earth</small></div>
           <div><b>${scale.planet.circumferenceKm.toLocaleString()} km</b><small>equatorial belt</small></div>
@@ -986,11 +1201,14 @@ export class TidebornGame {
           <div class="settings-options" aria-label="Display settings">
             <label><input type="checkbox" data-setting="reduced-bloom"> Reduced bloom</label>
             <label><input type="checkbox" data-setting="large-supplies"> Large supply icons</label>
-            <span>Press O to open or close</span>
+            <label><input type="checkbox" data-setting="mute-audio"> Mute audio</label>
+            <label class="music-volume">Music <input type="range" min="0" max="100" value="55" data-setting="music-volume" aria-label="Music volume"></label>
+            <button type="button" data-next-music>Next track</button>
+            <span data-now-playing>NOW PLAYING · waiting for the water</span>
           </div>
           <div class="octopoint-progress">
             <div><strong data-settings-points>1</strong><span>OCTIPOINTS</span></div>
-            <div class="octopoint-xp"><span><b data-settings-xp>0</b> / 100 SURVIVAL XP</span><i><b data-settings-xp-bar></b></i></div>
+            <div class="octopoint-xp"><span><b data-settings-xp>0</b> / <b data-settings-xp-next>140</b> SURVIVAL XP</span><i><b data-settings-xp-bar></b></i></div>
             <div class="octopoint-activity" data-settings-activity>Instinct awakens · one point ready</div>
           </div>
           <div class="octopoint-grid" data-octopoint-grid>${this.octopointGridTemplate()}</div>
@@ -1029,7 +1247,7 @@ export class TidebornGame {
           ${this.controlTemplate('Z / U / V', 'eat · use vent tonic · place gear or light')}
           ${this.controlTemplate('I', 'crafting')}
           ${this.controlTemplate('T', 'sleep inside a den')}
-          ${this.controlTemplate('M', 'planet scale atlas')}
+          ${this.controlTemplate('M', 'fog-of-war world map · den markers')}
           ${this.controlTemplate('O', 'settings · Octipoint Sphere')}
           ${this.controlTemplate('F', 'fullscreen')}
         </aside>
@@ -1038,7 +1256,9 @@ export class TidebornGame {
 
     this.craftPanel = document.createElement('aside');
     this.craftPanel.className = 'craft-panel panel';
-    this.craftPanel.innerHTML = `<div class="craft-head"><div><div class="eyebrow">EIGHT-ARM FABRICATION</div><h2>Crafting</h2></div><button data-close-craft>×</button></div><div class="recipe-list"></div>`;
+    this.craftPanel.setAttribute('aria-label', 'Crafting menu');
+    this.craftPanel.setAttribute('aria-hidden', 'true');
+    this.craftPanel.innerHTML = `<div class="craft-head"><div><div class="eyebrow">EIGHT-ARM FABRICATION</div><h2>Crafting</h2><p data-craft-summary>Checking your supply sling…</p></div><button data-close-craft aria-label="Close crafting menu">×</button></div><div class="craft-help">Choose a lit recipe. Missing materials stay visible so you know what to forage.</div><div class="recipe-list"></div>`;
     this.root.appendChild(this.craftPanel);
     this.atlasPanel = this.ui.querySelector<HTMLElement>('[data-ui="atlas"]')!;
     this.settingsPanel = this.ui.querySelector<HTMLElement>('[data-ui="settings"]')!;
@@ -1046,6 +1266,7 @@ export class TidebornGame {
 
     this.menu.querySelector('#start-btn')?.addEventListener('click', () => this.begin());
     this.craftPanel.querySelector('[data-close-craft]')?.addEventListener('click', () => this.toggleCraft(false));
+    this.ui.querySelector('[data-craft-toggle]')?.addEventListener('click', () => this.toggleCraft());
     this.hotbar.addEventListener('click', (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-tool-slot]');
       if (!button) return;
@@ -1053,6 +1274,8 @@ export class TidebornGame {
     });
     this.ui.querySelector('[data-play-again]')?.addEventListener('click', () => this.reset());
     this.ui.querySelector('[data-settings-toggle]')?.addEventListener('click', () => this.toggleSettings());
+    this.ui.querySelector('[data-map-toggle]')?.addEventListener('click', () => this.toggleAtlas());
+    this.atlasPanel.querySelector('[data-close-atlas]')?.addEventListener('click', () => this.toggleAtlas(false));
     this.settingsPanel.querySelector('[data-close-settings]')?.addEventListener('click', () => this.toggleSettings(false));
     this.settingsPanel.addEventListener('click', (event) => {
       const nodeButton = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-octopoint-node]');
@@ -1064,6 +1287,16 @@ export class TidebornGame {
     });
     this.settingsPanel.querySelector<HTMLInputElement>('[data-setting="large-supplies"]')?.addEventListener('change', (event) => {
       this.root.classList.toggle('large-supply-icons', (event.target as HTMLInputElement).checked);
+    });
+    this.settingsPanel.querySelector<HTMLInputElement>('[data-setting="mute-audio"]')?.addEventListener('change', (event) => {
+      this.sound.setMuted((event.target as HTMLInputElement).checked);
+    });
+    this.settingsPanel.querySelector<HTMLInputElement>('[data-setting="music-volume"]')?.addEventListener('input', (event) => {
+      this.sound.setMusicVolume(Number((event.target as HTMLInputElement).value) / 100);
+    });
+    this.settingsPanel.querySelector<HTMLButtonElement>('[data-next-music]')?.addEventListener('click', () => {
+      this.sound.nextMusic();
+      this.updateUI();
     });
     this.refreshHotbar(true);
     this.updateOctipointUI();
@@ -1104,6 +1337,10 @@ export class TidebornGame {
       if (event.code === 'KeyI' && this.mode !== 'menu') this.toggleCraft();
       if (event.code === 'KeyM' && this.mode !== 'menu') this.toggleAtlas();
       if (event.code === 'KeyO' && this.mode !== 'menu' && this.mode !== 'won' && this.mode !== 'lost') this.toggleSettings();
+      if (event.code === 'KeyL' && this.mode !== 'menu') this.denBuilder.toggle();
+      if (event.code === 'Digit9' && this.mode !== 'menu') this.denBuilder.cyclePreview();
+      if (event.code === 'Digit0' && this.mode !== 'menu') this.discoveries.toggle();
+      if (event.code === 'KeyP' && this.mode !== 'menu') this.ecologyJournal.toggle();
       if (event.code === 'Escape' && !document.fullscreenElement && this.mode !== 'menu') {
         if (this.settingsOpen) this.toggleSettings(false);
         else if (this.atlasOpen) this.toggleAtlas(false);
@@ -1138,6 +1375,7 @@ export class TidebornGame {
 
   private begin(): void {
     this.mode = 'playing';
+    this.tutorial.begin(this.elapsed);
     this.menu.classList.add('hidden');
     this.syncMobileControlsVisibility();
     this.sound.start();
@@ -1158,11 +1396,17 @@ export class TidebornGame {
 
   private toggleCraft(force?: boolean): void {
     this.craftOpen = force ?? !this.craftOpen;
+    if (this.craftOpen) this.tutorial.notify('craft-opened');
     if (this.craftOpen && this.settingsOpen) this.toggleSettings(false);
     if (this.craftOpen && this.atlasOpen) this.toggleAtlas(false);
     this.craftPanel.classList.toggle('open', this.craftOpen);
+    this.craftPanel.setAttribute('aria-hidden', String(!this.craftOpen));
+    const craftToggle = this.ui.querySelector<HTMLButtonElement>('[data-craft-toggle]');
+    craftToggle?.setAttribute('aria-expanded', String(this.craftOpen));
+    craftToggle?.classList.toggle('open', this.craftOpen);
     this.syncMobileControlsVisibility();
     this.refreshRecipes();
+    if (this.craftOpen) this.sound.play('craftStart');
   }
 
   private toggleAtlas(force?: boolean): void {
@@ -1170,6 +1414,62 @@ export class TidebornGame {
     if (this.atlasOpen && this.settingsOpen) this.toggleSettings(false);
     if (this.atlasOpen && this.craftOpen) this.toggleCraft(false);
     this.atlasPanel.classList.toggle('open', this.atlasOpen);
+    this.atlasPanel.setAttribute('aria-hidden', String(!this.atlasOpen));
+    const mapToggle = this.ui.querySelector<HTMLButtonElement>('[data-map-toggle]');
+    mapToggle?.setAttribute('aria-expanded', String(this.atlasOpen));
+    mapToggle?.classList.toggle('open', this.atlasOpen);
+    if (this.atlasOpen) this.refreshWorldMap();
+    this.syncMobileControlsVisibility();
+  }
+
+  private refreshWorldMap(): void {
+    const canvas = this.atlasPanel?.querySelector<HTMLCanvasElement>('[data-world-map]');
+    if (!canvas) return;
+    const dens = this.denNetwork.snapshot(this.player.x, this.player.y).sites;
+    const belt = this.beltTraversal.state(this.player.x, this.planetScale);
+    this.worldMap.render({
+      canvas,
+      world: this.world,
+      seaLevel: this.world.seaLevel,
+      player: {
+        x: this.player.x,
+        y: this.player.y,
+        canonicalDepthM: this.depthState.canonicalDepthM,
+        depthBand: this.depthState.band,
+      },
+      longitudeKm: belt.longitudeKm,
+      dens,
+    });
+    const snapshot = this.worldMap.snapshot(dens);
+    const setText = (selector: string, value: string): void => {
+      const element = this.atlasPanel.querySelector<HTMLElement>(selector);
+      if (element) element.textContent = value;
+    };
+    setText('[data-map-progress]', `${snapshot.exploredPercent.toFixed(1)}% CHARTED`);
+    setText('[data-map-cells]', `${snapshot.grid.exploredCells} / ${snapshot.grid.totalCells} MAP SECTORS`);
+    setText('[data-map-location]', this.depthState.band.toUpperCase());
+    const depthLabel = this.depthState.canonicalDepthM >= 1000
+      ? `${(this.depthState.canonicalDepthM / 1000).toFixed(1)} KM DEPTH`
+      : `${Math.round(this.depthState.canonicalDepthM)} M DEPTH`;
+    setText('[data-map-coordinates]', `${belt.longitudeKm.toLocaleString()} KM LONGITUDE · ${depthLabel}`);
+    setText('[data-map-den-count]', `${dens.length} ${dens.length === 1 ? 'DEN' : 'DENS'} MARKED`);
+    const denList = this.atlasPanel.querySelector<HTMLElement>('[data-map-dens]');
+    if (denList) {
+      if (dens.length === 0) {
+        const empty = document.createElement('span');
+        empty.textContent = 'No dens marked yet. Enter or claim a sheltered chamber.';
+        denList.replaceChildren(empty);
+      } else {
+        denList.replaceChildren(...dens.map((den) => {
+          const marker = document.createElement('div');
+          marker.className = `world-map-den-entry${den.destroyed ? ' lost' : ''}`;
+          const denBelt = this.beltTraversal.state(den.x, this.planetScale);
+          const denDepth = this.depthAccess.sample(den.x, den.y, this.world.seaLevel, true);
+          marker.innerHTML = `<i></i><span><b>${den.name}</b><small>${denBelt.longitudeKm.toLocaleString()} km · ${denDepth.band}${den.destroyed ? ' · lost' : ''}</small></span>`;
+          return marker;
+        }));
+      }
+    }
   }
 
   private toggleSettings(force?: boolean): void {
@@ -1187,6 +1487,7 @@ export class TidebornGame {
     this.settingsOpen = next;
     this.settingsPanel.classList.toggle('open', next);
     this.settingsPanel.setAttribute('aria-hidden', String(!next));
+    this.sound.play(next ? 'settingsOpen' : 'settingsClose');
     this.syncMobileControlsVisibility();
     this.updateOctipointUI();
   }
@@ -1195,8 +1496,8 @@ export class TidebornGame {
     const controls = this.root.querySelector<HTMLElement>('.mobile-controls');
     if (!controls || !this.mobileCamera.active) return;
     const sessionVisible = this.mode === 'playing' || this.mode === 'paused';
-    const obscured = this.craftOpen || this.settingsOpen;
-    controls.style.visibility = sessionVisible ? 'visible' : 'hidden';
+    const obscured = this.craftOpen || this.settingsOpen || this.atlasOpen;
+    controls.style.visibility = sessionVisible && !this.atlasOpen ? 'visible' : 'hidden';
     controls.style.opacity = sessionVisible ? (obscured ? '0.1' : '1') : '0';
     controls.setAttribute('aria-hidden', String(!sessionVisible || obscured));
   }
@@ -1209,6 +1510,7 @@ export class TidebornGame {
   private handleToolSelectionInput(): void {
     if (this.keys.pressed.has('Tab')) {
       const selected = this.toolbelt.cycle(this.inventory);
+      this.sound.play('toolEquip');
       this.setMessage(`Equipped ${selected.label}. ${selected.use}`);
       this.refreshHotbar(true);
       return;
@@ -1229,6 +1531,7 @@ export class TidebornGame {
       return;
     }
     this.setMessage(`Equipped ${selected.label}. ${selected.use}`);
+    this.sound.play('toolEquip');
     this.refreshHotbar(true);
   }
 
@@ -1263,6 +1566,7 @@ export class TidebornGame {
     if (!award.accepted) return;
     this.updateOctipointUI();
     if (award.pointsGained > 0) {
+      this.sound.play('octipointEarned');
       this.ui.querySelector('[data-settings-toggle]')?.classList.add('octipoint-earned');
       this.showBanner('Octipoint earned', `${detail} · Select a glowing connected ability in Settings [O].`, 4.8);
     }
@@ -1271,6 +1575,7 @@ export class TidebornGame {
   private purchaseOctipoint(nodeId: string): void {
     const result = this.octipoints.purchase(nodeId);
     if (!result.purchased) {
+      this.sound.play('gridDenied');
       const reason = result.reason === 'prerequisite'
         ? 'Follow the connected Tier I → II → III path first.'
         : result.reason === 'points'
@@ -1279,7 +1584,7 @@ export class TidebornGame {
       this.setMessage(reason);
       return;
     }
-    this.sound.pulse('craft');
+    this.sound.play('gridNodeActivated');
     this.setMessage(`${result.node!.name} adapted. ${result.node!.description}.`);
     this.updateOctipointUI();
   }
@@ -1295,6 +1600,7 @@ export class TidebornGame {
     setText('[data-octopoint-badge]', String(snapshot.availablePoints));
     setText('[data-settings-points]', String(snapshot.availablePoints));
     setText('[data-settings-xp]', String(snapshot.experience));
+    setText('[data-settings-xp-next]', String(snapshot.experienceToNext));
     const xpBar = this.ui.querySelector<HTMLElement>('[data-settings-xp-bar]');
     if (xpBar) xpBar.style.width = `${snapshot.experience / snapshot.experienceToNext * 100}%`;
     const latest = snapshot.activity[0];
@@ -1340,6 +1646,26 @@ export class TidebornGame {
       cameraY: this.cameraTarget.y,
       season,
     });
+    const activeDenForSeason = this.denNetwork.currentDen(this.player.x, this.player.y);
+    this.seasonalWorld.update(dt, this.elapsed, {
+      season,
+      cryoLocal: this.cryosphere.snapshot().local,
+      playerY: this.player.y,
+      inDen: Boolean(activeDenForSeason),
+      denInsulation01: clamp(
+        (activeDenForSeason?.curtains ?? 0) * 0.34
+        + (activeDenForSeason?.braces ?? 0) * 0.12
+        + (activeDenForSeason?.mineralReinforcement ?? 0) * 0.08
+        + (activeDenForSeason?.bowls ?? 0) * 0.1,
+        0, 1,
+      ),
+    });
+    if (this.seasonalWorld.migrationState.surfaceBirds !== this.lastBirdPhase) {
+      this.lastBirdPhase = this.seasonalWorld.migrationState.surfaceBirds;
+      if (this.lastBirdPhase === 'leaving' || this.lastBirdPhase === 'returning') {
+        this.showBanner(this.lastBirdPhase === 'leaving' ? 'The flocks depart' : 'Scouts return', this.seasonalWorld.migrationBanner, 4.6);
+      }
+    }
 
     this.handleToolSelectionInput();
     const previousPlayerX = this.player.x;
@@ -1347,6 +1673,16 @@ export class TidebornGame {
       ? this.treeInteraction.sampleGrip(this.player.x, this.player.y)
       : null;
     const events = this.player.update(dt, this.keys, this.world, this.world.seaLevel, this.elapsed, treeGrip);
+    this.lastFrameDt = dt;
+    this.tutorial.setSeaLevel(this.world.seaLevel);
+    this.tutorial.notify('moved', Math.hypot(this.player.vx, this.player.vy) * dt);
+    if (this.player.y < this.world.seaLevel - 0.5) this.tutorial.notify('dived', this.player.y);
+    this.tutorial.update(this.elapsed);
+    if (this.vibrationSpeedFactor < 1 && this.player.underwater && !this.player.gripping) {
+      const blindDrag = Math.pow(this.vibrationSpeedFactor, dt * 2.35);
+      this.player.vx *= blindDrag;
+      this.player.vy *= blindDrag;
+    }
     const treeCollision = this.treeInteraction.resolve(this.player.x, this.player.y, this.player.radius);
     if (treeCollision.collided) {
       this.player.x = treeCollision.x;
@@ -1364,6 +1700,7 @@ export class TidebornGame {
       this.camera.position.x = this.player.x;
       this.setMessage(`PLANETARY WRAP · Longitude seam crossed. Revolution ${Math.abs(this.beltTraversal.state(this.player.x, this.planetScale).revolutions)}.`);
     }
+    this.worldMap.visit(this.player.x, this.player.y);
     this.bioluminescence.reconcile(this.inventory.glowKelp, this.denNetwork.biolightCounts());
     const biolightUpdate = this.bioluminescence.update(dt * (this.debugFastTime ? 4 : 1));
     if (biolightUpdate.carriedExpired > 0) {
@@ -1381,9 +1718,14 @@ export class TidebornGame {
       this.nextDepthWarning = this.elapsed + 3.5;
     }
     this.depthState = attemptedDepth;
+    this.sound.updateEnvironment(this.depthState.canonicalDepthM, this.player.underwater, {
+      stormStrength: storm,
+      winter: season.id === 'winter',
+    });
     const depthBand = this.planetScale.state(this.depthState.canonicalDepthM).currentDepth.band;
     this.recordOctoExperience('exploration', 34, `First entry into the ${depthBand}`, `depth-band:${depthBand}`);
     if (events.jet) {
+      this.lastJetPulseElapsed = this.elapsed;
       const learnedJetBlast = this.jetBlast.trainJet(this.player.lastJetStrength);
       this.sound.pulse('jet');
       const direction = this.player.lastJetDirection.clone();
@@ -1423,16 +1765,23 @@ export class TidebornGame {
       this.player.braced = false;
       this.setMessage('Nothing solid is within sucker reach.');
     }
+    if (events.braceChanged && this.player.braced) {
+      this.sound.play('brace');
+      this.tutorial.notify('braced');
+    }
     if (events.camouflageChanged) {
+      this.sound.play(this.player.camouflage ? 'camouflageOn' : 'camouflageOff');
       this.setMessage(this.player.camouflage
         ? `Chromatophores matching ${this.player.camouflageSurface}. Stay slow and let the pattern settle.`
         : 'Camouflage released. Natural mantle color returning.');
     }
     if (events.gripStarted) {
+      this.sound.play('gripLock');
       this.setMessage(`Suckers locked to ${this.player.gripSurface ?? 'the surface'}. Motion stopped; predators lose your silhouette.`);
     } else if (events.gripFailed) {
       this.setMessage('Grip failed · no floor, wall, or ceiling is within sucker reach.');
     } else if (events.gripReleased) {
+      this.sound.play('grabRelease');
       this.setMessage('Surface grip released. You are visible to hunting predators again.', 2.4);
     }
     if (events.dig && !this.handleHeldOrganismDig()) this.handleDig();
@@ -1459,9 +1808,11 @@ export class TidebornGame {
     this.minerals.update(this.elapsed);
     this.supplies.update(this.elapsed);
     this.relics.update(this.elapsed);
+    this.discoveries.update(this.elapsed, this.player.x, this.player.y);
     this.proceduralClams.update(this.elapsed, this.player.x, this.player.y);
     const wormEvents = this.deepTubeWorms.update(dt, this.elapsed, this.player.x, this.player.y, this.hasLocalBiolight());
     for (const event of wormEvents) this.applyTubeWormSpray(event);
+    const ecoBefore = { ...this.ecosystem };
     const marineEvents = this.marineLife.update(dt, this.elapsed, storm, {
       x: this.player.x,
       y: this.player.y,
@@ -1472,6 +1823,7 @@ export class TidebornGame {
       if (event.kind === 'anemone-catch') {
         this.ecosystem.smallFish = Math.max(0, this.ecosystem.smallFish - 1);
         this.spawnBurst(event.x, event.y, '#f3a6a1');
+        this.huntingFeedback.ingestPredatorEvent({ id: 'anemone-colony', species: 'anemone', kind: 'feeding', x: event.x, y: event.y });
         if (Math.hypot(event.x - this.player.x, event.y - this.player.y) < 5 && this.messageUntil <= this.elapsed) {
           this.setMessage('An anemone closes around a fish. The reef is hunting too.');
         }
@@ -1506,6 +1858,7 @@ export class TidebornGame {
         if (event.preyKind === 'fish') this.ecosystem.smallFish = Math.max(0, this.ecosystem.smallFish - 1);
         else this.ecosystem.shellfish = Math.max(0, this.ecosystem.shellfish - 1);
         this.vfx.cast('feeding', new THREE.Vector3(event.x, event.y, 3.22));
+        this.huntingFeedback.ingestPredatorEvent({ id: String(event.crabId ?? event.species), species: String(event.species), kind: 'feeding', x: event.x, y: event.y });
         if (Math.hypot(event.x - this.player.x, event.y - this.player.y) < 7 && this.messageUntil <= this.elapsed) {
           this.setMessage(`${event.species.replaceAll('-', ' ').toUpperCase()} FEEDS · It ${event.preyKind === 'clam' ? 'cracks a clam' : 'ambushes a low-swimming fish'}; the coastal food web shifts.`);
         }
@@ -1513,6 +1866,9 @@ export class TidebornGame {
         this.survival.health = clamp(this.survival.health - event.damage, 0, 100);
         this.player.vx += event.knockbackX;
         this.spawnBurst(event.x, event.y, '#a84b36');
+        this.huntingFeedback.ingestPredatorEvent({ id: String(event.crabId ?? event.species), species: String(event.species), kind: 'attacked', x: event.x, y: event.y });
+        this.huntingFeedback.ingestPredatorEvent({ id: String(event.crabId ?? event.species), species: String(event.species), kind: 'hit', x: event.x, y: event.y, amount: clamp(event.damage / 30, 0.05, 0.5) });
+        this.lastBiteWindow = { id: String(event.crabId ?? event.species), px: event.x, py: event.y, t: this.elapsed };
         this.setMessage(`COCONUT CRAB PINCH · −${event.damage} health. Jet wash, camouflage, or keep clear of its claws.`);
       } else if (Math.hypot(event.x - this.player.x, event.y - this.player.y) < 7 && this.messageUntil <= this.elapsed) {
         this.spawnBurst(event.x, event.y, event.kind === 'birth' ? '#e6c185' : '#6f665c');
@@ -1552,6 +1908,7 @@ export class TidebornGame {
       }
       if (event.kind === 'predation') {
         this.vfx.cast('feeding', new THREE.Vector3(event.x, event.y, 3.38));
+        this.huntingFeedback.ingestPredatorEvent({ id: event.predatorId, species: event.predatorSpecies, kind: 'feeding', x: event.x, y: event.y });
         if (Math.hypot(event.x - this.player.x, event.y - this.player.y) < 8 && this.messageUntil <= this.elapsed) {
           const predator = event.predatorSpecies === 'orca' ? 'An orca' : event.predatorSpecies === 'sixgill-shark' ? 'A sixgill shark' : 'A gulper eel';
           const prey = event.preySpecies === 'sixgill-shark' ? 'a shark' : 'a lantern-fish school';
@@ -1564,6 +1921,9 @@ export class TidebornGame {
       this.player.vx += event.knockbackX;
       this.player.vy += event.knockbackY;
       this.spawnBurst(event.x, event.y, '#8e2732');
+      this.huntingFeedback.ingestPredatorEvent({ id: event.predatorId, species: event.species, kind: 'attacked', x: event.x, y: event.y });
+      this.huntingFeedback.ingestPredatorEvent({ id: event.predatorId, species: event.species, kind: 'hit', x: event.x, y: event.y, amount: clamp(event.damage / 40, 0.05, 0.5) });
+      this.lastBiteWindow = { id: event.predatorId, px: event.x, py: event.y, t: this.elapsed };
       const predator = event.species === 'orca' ? 'A pelagic orca' : event.species === 'sixgill-shark' ? 'A deep sixgill shark' : 'A gulper eel';
       this.setMessage(`${predator} strikes from the black water · −${event.damage} health. Grip a surface, ink, jet, or camouflage to break pursuit.`);
     }
@@ -1582,6 +1942,10 @@ export class TidebornGame {
       this.player.vx += event.knockbackX;
       this.player.vy += event.knockbackY;
       this.spawnBurst(event.x, event.y, '#9c2635');
+      const importedId = typeof event.creatureId === 'string' ? event.creatureId : `imported-${event.species}`;
+      this.huntingFeedback.ingestPredatorEvent({ id: importedId, species: event.species, kind: 'attacked', x: event.x, y: event.y });
+      this.huntingFeedback.ingestPredatorEvent({ id: importedId, species: event.species, kind: 'hit', x: event.x, y: event.y, amount: clamp(event.damage / 40, 0.05, 0.5) });
+      this.lastBiteWindow = { id: importedId, px: event.x, py: event.y, t: this.elapsed };
       this.setMessage(`${event.species.replaceAll('-', ' ').toUpperCase()} STRIKE · −${event.damage} health. Break its pursuit with ink, grip, camouflage, or chained jets.`);
     }
     for (const event of deepShoalEvents) {
@@ -1599,6 +1963,34 @@ export class TidebornGame {
         this.setMessage(`${predator.toUpperCase()} FEEDS · It catches and swallows a ${event.fishSpecies.replaceAll('-', ' ')}.`);
       }
     }
+    this.huntingFeedback.update(dt, {
+      px: this.player.x,
+      py: this.player.y,
+      darkness: this.depthState.darkness,
+      camouflaged: this.player.concealed,
+      jetRecent: this.elapsed - this.lastJetPulseElapsed < 1.2,
+      predators: [
+        ...this.deepSeaLife.snapshot(this.player.x, this.player.y).nearby
+          .filter((entry) => entry.threat)
+          .map((entry) => ({ id: entry.id, species: String(entry.species), x: Number(entry.x), y: Number(entry.y) })),
+        ...this.importedDeepFauna.snapshot(this.player.x, this.player.y).nearby
+          .filter((entry) => entry.threat)
+          .map((entry) => ({ id: entry.id, species: String(entry.species), x: Number(entry.x), y: Number(entry.y) })),
+        ...this.amphibiousCrabs.snapshot(this.player.x, this.player.y).nearby
+          .filter((entry) => (entry as { behavior?: unknown }).behavior === 'pinching')
+          .map((entry) => ({ id: String((entry as { id?: unknown }).id ?? 'crab'), species: String((entry as { species?: unknown }).species ?? 'crab'), x: Number(entry.x), y: Number(entry.y) })),
+      ],
+    });
+    if (this.lastBiteWindow && this.elapsed - this.lastBiteWindow.t < 0.45) {
+      if (this.huntingFeedback.noteDodge(this.lastBiteWindow.id, this.player.x, this.player.y, this.lastBiteWindow.px, this.lastBiteWindow.py, this.player.vx, this.player.vy)) {
+        this.player.stamina = clamp(this.player.stamina + 3, 0, 100);
+        this.setMessage('DODGED · You slipped the strike. Stamina surges back.');
+        this.lastBiteWindow = null;
+      }
+    } else if (this.lastBiteWindow && this.elapsed - this.lastBiteWindow.t >= 0.45) {
+      this.lastBiteWindow = null;
+    }
+    this.huntingFeedback.resetDaily(this.elapsed);
     this.updateCreatures(dt, storm);
     const survivorEvents = this.survivorOctopi.update(dt, this.elapsed, storm, { x: this.player.x, y: this.player.y });
     for (const event of survivorEvents) {
@@ -1618,7 +2010,54 @@ export class TidebornGame {
         if (nearby) this.setMessage('A juvenile octopus emerges from a neighboring protected shelter.');
       }
     }
+    const dayNow = this.elapsed / DAY_LENGTH;
+    const stormIncomingDays = season.id === 'winter'
+      ? null
+      : season.id === 'storm-season'
+        ? season.daysUntilWinter
+        : Math.max(0.1, STORM_WARNING / DAY_LENGTH - dayNow);
+    const relationEvents = this.survivorRelations.update(dt, {
+      px: this.player.x,
+      py: this.player.y,
+      elapsed: this.elapsed,
+      storm,
+      survivors: this.survivorOctopi.snapshot(this.player.x, this.player.y).nearby.map((entry) => ({
+        id: String(entry.id),
+        name: String(entry.name),
+        x: Number(entry.x),
+        y: Number(entry.y),
+        distance: Number(entry.distance),
+        hunger: typeof (entry as { hunger?: unknown }).hunger === 'number' ? Number((entry as { hunger?: number }).hunger) : undefined,
+        ageYears: typeof (entry as { ageYears?: unknown }).ageYears === 'number' ? Number((entry as { ageYears?: number }).ageYears) : undefined,
+      })),
+      playerFoodCount: this.inventory.food,
+      playerDenIds: this.denNetwork.snapshot(this.player.x, this.player.y).sites.filter((site) => site.discovered && !site.destroyed).map((site) => site.id),
+      stormIncomingDays,
+    });
+    for (const relationEvent of relationEvents) {
+      if (relationEvent.type === 'turn-predator' || relationEvent.type === 'food-theft') this.setMessage(relationEvent.detail);
+      else if (this.messageUntil <= this.elapsed) this.setMessage(relationEvent.detail);
+    }
+    this.ecoSampleAccumulator += dt;
+    if (this.ecoSampleAccumulator >= 0.5) {
+      this.ecoSampleAccumulator = 0;
+      const entries = this.ecologyJournal.observeEcosystem(this.ecoBaseline, this.ecosystem, this.elapsed);
+      if (entries.length > 0 && this.messageUntil <= this.elapsed) {
+        this.setMessage(`ECOLOGY · ${entries[0].title} [P]`);
+      }
+      this.ecoBaseline = { ...this.ecosystem };
+    }
     this.trees.update(this.elapsed, storm);
+    this.toolUseVisuals.update(this.elapsed, this.player);
+    this.denDecorations.update(this.elapsed, storm);
+    const denTotals = this.denNetwork.totals();
+    this.denBuilder.update(dt, {
+      px: this.player.x,
+      py: this.player.y,
+      braces: denTotals.braces,
+      lamps: denTotals.bioLights,
+      foodStored: denTotals.foodStored,
+    });
     this.vfx.update(dt);
     this.checkDiscoveries();
     this.checkTimeline();
@@ -1676,6 +2115,8 @@ export class TidebornGame {
     this.updateCreatures(dt, 0);
     this.survivorOctopi.update(dt, this.elapsed, 0, { x: this.player.x, y: this.player.y });
     this.trees.update(this.elapsed, 0);
+    this.toolUseVisuals.update(this.elapsed, this.player);
+    this.denDecorations.update(this.elapsed, 0);
     this.pointerAim.updateVisual(this.player.x, this.player.y, this.player.facing, this.elapsed, false, this.camera);
     this.vfx.update(dt);
     this.oceanSurface.update(this.elapsed, 0, 0, 0);
@@ -1713,12 +2154,17 @@ export class TidebornGame {
         this.player.techniqueTimer = 0.78;
         this.survival.hunger = clamp(this.survival.hunger + result.nutrition, 0, 100);
         this.survival.health = clamp(this.survival.health + result.healthRestore, 0, 100);
-        this.inventory.food += result.cachedFood;
+        this.inventory.food += Math.max(0, Math.round(result.cachedFood * this.seasonalWorld.foodScarcityFactor));
         this.vfx.cast('hunt', new THREE.Vector3(this.player.x, this.player.y, 0), direction);
         this.vfx.cast('feeding', new THREE.Vector3(result.x, result.y, 3.25));
         this.spawnBurst(result.x, result.y, '#8f3040');
         this.sound.pulse('hunt');
         this.recordOctoExperience('hunting', 54, `Devoured rival octopus ${result.name}`);
+        const betrayal = this.survivorRelations.betray(String(result.survivorId ?? result.name), result.name);
+        if (this.messageUntil <= this.elapsed || betrayal.turnedPredator) {
+          this.setMessage(`CONSPECIFIC PREDATION WITNESSED · ${betrayal.detail}${betrayal.turnedPredator ? ` ${result.name} now hunts you.` : ''}`);
+        }
+        this.tutorial.notify('hunted');
         const cacheNotice = result.cachedFood > 0 ? ` Its shelter sling yields ${result.cachedFood} stored food.` : '';
         this.setMessage(`CONSPECIFIC PREDATION · Eight arms overpower ${result.name}. +${result.nutrition} hunger, +${result.healthRestore} health.${cacheNotice}`);
       }
@@ -1740,12 +2186,14 @@ export class TidebornGame {
         this.player.stamina = clamp(this.player.stamina - crabStaminaCost, 0, 100);
         this.player.technique = hasNet ? 'crab net' : 'crab grapple';
         this.player.techniqueTimer = 0.62;
-        this.inventory.food += crabResult.foodYield;
+        this.inventory.food += Math.max(1, Math.round(crabResult.foodYield * this.seasonalWorld.foodScarcityFactor));
         this.inventory.shellFragments += 1;
         this.vfx.cast('hunt', new THREE.Vector3(this.player.x, this.player.y, 0), new THREE.Vector2(crabResult.x - this.player.x, crabResult.y - this.player.y));
         this.spawnBurst(crabResult.x, crabResult.y, '#dc885e');
         this.sound.pulse('hunt');
+        this.huntingFeedback.markRemains(crabResult.x, crabResult.y, 'crab');
         this.recordOctoExperience('hunting', 30, `Hunted ${crabResult.label}`);
+        this.tutorial.notify('hunted');
         this.setMessage(`${hasNet ? 'The net pins' : 'Eight arms overpower'} ${crabResult.label}. +${crabResult.foodYield} food, +1 carapace fragment`);
       }
       return;
@@ -1790,8 +2238,18 @@ export class TidebornGame {
     this.vfx.cast('hunt', new THREE.Vector3(this.player.x, this.player.y, 0), direction);
     this.spawnBurst(result.x, result.y, hasNet ? '#9cf0d1' : '#f0ad79');
     this.sound.pulse('hunt');
+    this.huntingFeedback.markRemains(result.x, result.y, 'fish');
     this.recordOctoExperience('hunting', inDeepHabitat ? 34 : 26, `Hunted ${inDeepHabitat ? 'a deep-sea fish' : 'a reef fish'}`);
+    this.tutorial.notify('hunted');
     this.setMessage(`${hasNet ? 'The net folds around' : 'Eight arms close on'} ${result.fishId}. +1 fresh fish`);
+  }
+
+  private animateToolUse(action: ToolUseAction, direction: THREE.Vector2, toolId?: ToolId, label?: string): void {
+    const selected = this.toolbelt.selectedDefinition(this.inventory);
+    const id = toolId ?? selected.id;
+    const toolLabel = label ?? TOOL_DEFINITIONS.find((definition) => definition.id === id)?.label ?? selected.label;
+    this.player.performToolUse(action, direction, toolLabel.toLowerCase());
+    this.toolUseVisuals.play(id, action, this.elapsed, direction);
   }
 
   private handleDig(): void {
@@ -1805,18 +2263,22 @@ export class TidebornGame {
       return;
     }
     const toolStrength = activeTool.dig.strength;
-    const effectiveStrength = toolStrength * 1.14 * (this.player.braced ? 1.25 : 1) * (1 + this.octipoints.effect('digPower'));
+    const effectiveStrength = toolStrength * NORMAL_DIG_POWER_MULTIPLIER
+      * (this.player.braced ? 1.25 : 1)
+      * (1 + this.octipoints.effect('digPower'));
     const radius = activeTool.dig.radius * (1 + this.octipoints.effect('digRadius'));
     this.pointerAim.syncCamera(this.camera);
     const aimState = this.pointerAim.snapshot(this.player.x, this.player.y, this.player.facing);
     const aimDirection = new THREE.Vector2(aimState.directionX, aimState.directionY).normalize();
     if (Math.abs(aimDirection.x) > 0.08) this.player.facing = Math.sign(aimDirection.x);
+    this.animateToolUse('dig', aimDirection, activeTool.id, activeTool.label);
     let point = this.player.digPoint(aimDirection);
-    let result = this.world.dig(point.x, point.y, radius, effectiveStrength);
+    const digRadius = radius * DIG_RADIUS_MULTIPLIER;
+    let result = this.world.dig(point.x, point.y, digRadius, effectiveStrength);
     // If the forward arms meet open water, naturally rake down toward the substrate.
     if (result.removed === 0 && !result.blocked && !aimState.active) {
       point = { x: this.player.x + this.player.facing * 0.34, y: this.player.y - 0.64 };
-      result = this.world.dig(point.x, point.y, radius, effectiveStrength);
+      result = this.world.dig(point.x, point.y, digRadius, effectiveStrength);
     }
     const learnedJetBlast = this.jetBlast.trainExcavation(result.removed, result.chipped);
     if (result.removed > 0) {
@@ -1825,11 +2287,13 @@ export class TidebornGame {
         this.excavatedCellsForExperience -= 120;
         this.recordOctoExperience('excavation', 18, 'Excavated and learned from 120 microcells');
       }
-      const cost = Math.max(3, result.removed * 0.2) * (this.player.braced ? 0.68 : 1);
+      this.tutorial.notify('dug');
+      this.discoveries.notifyDig(point.x, point.y);
+      const cost = Math.max(2.4, result.removed * 0.11) * (this.player.braced ? 0.68 : 1);
       this.player.stamina = clamp(this.player.stamina - cost, 0, 100);
       const mineralDrops = this.minerals.spawnFromExcavation(result.material, result.removed, point.x, point.y, this.depthState.canonicalDepthM);
       const relicDrops = this.relics.spawnFromExcavation(result.material, result.removed, point.x, point.y, this.depthState.canonicalDepthM);
-      this.sound.pulse('dig');
+      this.sound.dig(activeTool.id, result.material);
       this.vfx.cast('dig', new THREE.Vector3(point.x, point.y, 0), aimDirection);
       this.spawnBurst(point.x, point.y, result.material === MaterialId.Sand ? '#d7bb80' : '#8c8872');
       const mineralNotice = mineralDrops.length
@@ -1842,7 +2306,7 @@ export class TidebornGame {
     } else if (result.chipped > 0) {
       const cost = 3.4 * (this.player.braced ? 0.72 : 1);
       this.player.stamina = clamp(this.player.stamina - cost, 0, 100);
-      this.sound.pulse('dig');
+      this.sound.dig(activeTool.id, result.material);
       this.vfx.cast('dig', new THREE.Vector3(point.x, point.y, 0), aimDirection);
       this.spawnBurst(point.x, point.y, '#72594f');
       const action = activeTool.id === 'arms' ? 'slowly fracture' : 'slowly fractures';
@@ -1874,10 +2338,11 @@ export class TidebornGame {
       arms: 1, shellBlade: 2, shellSpade: 1, stoneHammer: 2, stoneWedge: 2, stoneAdze: 2, boneHook: 1,
     };
     if (clam) {
+      this.animateToolUse('pry', new THREE.Vector2(0, 1), tool.id, tool.label);
       const result = this.proceduralClams.pryHeld((clamForce[tool.id] ?? 0.2) * (1 + this.octipoints.effect('clamPry')))!
       this.player.stamina = clamp(this.player.stamina - (tool.id === 'arms' ? 5.2 : 3.4), 0, 100);
       this.vfx.cast('dig', new THREE.Vector3(result.x, result.y, 0), new THREE.Vector2(0, 1));
-      this.sound.pulse('dig');
+      this.sound.dig(tool.id, MaterialId.CrushedShell);
       if (result.opened) {
         this.inventory.food += 1;
         this.inventory.largeShell += 1;
@@ -1891,10 +2356,11 @@ export class TidebornGame {
       }
       return true;
     }
+    this.animateToolUse('cut', new THREE.Vector2(0, -1), tool.id, tool.label);
     const result = this.deepTubeWorms.cutHeld(wormDamage[tool.id] ?? 1)!;
     this.player.stamina = clamp(this.player.stamina - (tool.id === 'arms' ? 6 : 4), 0, 100);
     this.vfx.cast('dig', new THREE.Vector3(result.x, result.y, 0), new THREE.Vector2(0, -1));
-    this.sound.pulse('dig');
+    this.sound.dig(tool.id, MaterialId.Mud);
     if (result.harvested) {
       this.inventory.tubeWormMeat += 1;
       this.recordOctoExperience('hunting', 38, 'Survived a defensive vent-worm harvest');
@@ -1912,12 +2378,26 @@ export class TidebornGame {
       this.setMessage(failure);
       return;
     }
-    this.pointerAim.syncCamera(this.camera);
-    const direction = this.pointerAim.directionFrom(this.player.x, this.player.y, this.player.facing).clone();
+    const keyboardCast = this.keys.pressed.has('KeyK') && !this.keys.pressed.has('MouseRight');
+    let direction: THREE.Vector2;
+    if (keyboardCast) {
+      const axisX = Number(this.keys.held.has('KeyD') || this.keys.held.has('ArrowRight'))
+        - Number(this.keys.held.has('KeyA') || this.keys.held.has('ArrowLeft'));
+      const axisY = Number(this.keys.held.has('KeyW') || this.keys.held.has('ArrowUp'))
+        - Number(this.keys.held.has('KeyS') || this.keys.held.has('ArrowDown'));
+      if (axisX !== 0 || axisY !== 0) direction = new THREE.Vector2(axisX, axisY).normalize();
+      else if (this.player.underwater && Math.hypot(this.player.vx, this.player.vy) > 0.35) {
+        direction = new THREE.Vector2(this.player.vx, this.player.vy).normalize();
+      } else direction = new THREE.Vector2(this.player.facing, 0);
+    } else {
+      this.pointerAim.syncCamera(this.camera);
+      direction = this.pointerAim.directionFrom(this.player.x, this.player.y, this.player.facing).clone();
+    }
     const origin = new THREE.Vector2(this.player.x, this.player.y);
     const cast = this.jetBlast.cast(this.world, origin, direction);
     this.player.performJetBlast(direction, this.jetBlast.staminaCost);
     this.sound.pulse('blast');
+    this.sound.play('jetBlastImpact', { delaySeconds: 0.08 });
 
     const pushed = this.marineLife.applyJet(origin.x, origin.y, direction, 3.4)
       + this.deepSeaLife.applyJet(origin.x, origin.y, direction, this.elapsed, 3.4)
@@ -1953,11 +2433,18 @@ export class TidebornGame {
   }
 
   private handleInteract(): void {
+    if (this.discoveries.recoverNearest(this.player.x, this.player.y)) {
+      const found = this.discoveries.latestRecovery();
+      this.sound.collect('generic');
+      if (found?.storyLine) this.showBanner(found.label, found.storyLine, 5.4);
+      else if (found) this.setMessage(`${found.label} recovered · logged in the Codex of the Tide [0].`);
+      return;
+    }
     const relicDrop = this.relics.nearest(this.player.x, this.player.y, 1.55);
     if (relicDrop) {
       const relic = this.relics.collect(relicDrop);
       if (relic.id === 'stone-adze') this.inventory.stoneAdze += 1;
-      this.sound.pulse('gather');
+      this.sound.collect('mineral');
       this.spawnBurst(relicDrop.x, relicDrop.y, relic.color);
       this.setMessage(`${relic.category.toUpperCase()} · ${relic.label}. ${relic.use}`);
       this.refreshHotbar(true);
@@ -1967,7 +2454,7 @@ export class TidebornGame {
     if (mineralDrop) {
       const mineral = this.minerals.collect(mineralDrop);
       this.inventory[mineral.id] += 1;
-      this.sound.pulse('gather');
+      this.sound.collect('mineral');
       this.spawnBurst(mineralDrop.x, mineralDrop.y, mineral.color);
       this.setMessage(`${mineral.label} collected. ${mineral.use}`);
       return;
@@ -1984,7 +2471,7 @@ export class TidebornGame {
     if (healthDrop) {
       this.deepTubeWorms.collectHealthDrop(healthDrop);
       this.inventory.ventTonic += 1;
-      this.sound.pulse('gather');
+      this.sound.collect('biolight');
       this.spawnBurst(healthDrop.x, healthDrop.y, '#ffbd68');
       this.setMessage('RESTORATIVE VESICLE COLLECTED · Stored safely. Press U or tap HEAL later to restore health.');
       return;
@@ -2009,7 +2496,7 @@ export class TidebornGame {
     if (supplyDrop && supplyDistance <= entityDistance) {
       const supply = this.supplies.collect(supplyDrop);
       this.inventory[supply.id] += 1;
-      this.sound.pulse('gather');
+      this.sound.collect('generic');
       this.spawnBurst(supplyDrop.x, supplyDrop.y, supply.color);
       this.recordOctoExperience('foraging', 14, `Discovered ${supply.label}`, `supply:${supplyDrop.id}`);
       this.setMessage(`${supply.label} collected. ${supply.use}`);
@@ -2030,12 +2517,13 @@ export class TidebornGame {
       if (this.toolbelt.isEquipped('shellBlade', this.inventory)) {
         entity.gathered = true;
         const bonusFiber = this.octipoints.effect('harvestYield');
-        this.inventory.fibers += 3 + bonusFiber;
+        this.inventory.fibers += Math.max(1, Math.round((3 + bonusFiber) * this.seasonalWorld.foodScarcityFactor));
         this.inventory.kelp += 1;
         this.ecosystem.kelpCover = Math.max(0, this.ecosystem.kelpCover - 2);
         this.recordOctoExperience('foraging', 10, 'Cut marine vegetation while preserving its holdfast');
+        this.tutorial.notify('gathered');
         this.setMessage(`You cut the stalk cleanly. The holdfast will regrow. +${3 + bonusFiber} fiber, +1 kelp`);
-        this.sound.pulse('gather');
+        this.sound.collect('fiber');
         this.hideEntity(entity);
       } else {
         this.heldEntity = entity.id;
@@ -2048,8 +2536,9 @@ export class TidebornGame {
       this.hideEntity(entity);
       this.inventory.glowKelp += 1;
       this.bioluminescence.addCarried();
+      this.tutorial.notify('gathered');
       this.vfx.cast('bioPulse', new THREE.Vector3(entity.x, entity.y + 0.45, 0));
-      this.sound.pulse('gather');
+      this.sound.collect('biolight');
       this.setMessage(`Bioluminescent seaweed wraps around one arm. Each sparse frond burns for ${Math.round(this.bioluminescence.lifetimePerFrondSeconds)} seconds; stacks extend the reserve. +1 glow kelp`);
       return;
     }
@@ -2079,7 +2568,8 @@ export class TidebornGame {
       entity.gathered = false;
       this.setMessage('Superheated mineral water. Your skin recoils from the plume.');
     }
-    this.sound.pulse('gather');
+    this.tutorial.notify('gathered');
+    this.sound.collect(entity.kind === 'stone' ? 'stone' : entity.kind === 'wood' ? 'wood' : 'generic');
   }
 
   private handleTwist(): void {
@@ -2105,15 +2595,16 @@ export class TidebornGame {
     entity.gathered = true;
     this.hideEntity(entity);
     const bonusFiber = this.octipoints.effect('harvestYield');
-    this.inventory.fibers += (entity.kind === 'kelp' ? 5 : 4) + bonusFiber;
+    const uprootedFiber = Math.max(1, Math.round(((entity.kind === 'kelp' ? 5 : 4) + bonusFiber) * this.seasonalWorld.foodScarcityFactor));
+    this.inventory.fibers += uprootedFiber;
     this.inventory.kelp += entity.kind === 'kelp' ? 2 : 1;
     this.ecosystem.kelpCover = Math.max(0, this.ecosystem.kelpCover - 12);
     this.ecosystem.sedimentStability = Math.max(0, this.ecosystem.sedimentStability - 7);
     this.player.stamina = clamp(this.player.stamina - 13, 0, 100);
     this.heldEntity = null;
-    this.sound.pulse('gather');
+    this.sound.collect('fiber');
     this.recordOctoExperience('foraging', 8, 'Learned from uprooting a holdfast and exposing sediment');
-    this.setMessage(`The roots tear free. Rich harvest—but the sediment is now exposed. +${(entity.kind === 'kelp' ? 5 : 4) + bonusFiber} fiber, +${entity.kind === 'kelp' ? 2 : 1} kelp`);
+    this.setMessage(`The roots tear free. Rich harvest—but the sediment is now exposed. +${uprootedFiber} fiber, +${entity.kind === 'kelp' ? 2 : 1} kelp`);
   }
 
   private eat(): void {
@@ -2155,7 +2646,7 @@ export class TidebornGame {
     this.survival.health = clamp(this.survival.health + 34, 0, 100);
     this.survival.temperature = clamp(this.survival.temperature + 2.5, -10, 70);
     this.vfx.cast('bioPulse', new THREE.Vector3(this.player.x, this.player.y, 3.4));
-    this.sound.pulse('gather');
+    this.sound.collect('biolight');
     this.setMessage(`VENT TONIC USED · regenerative proteins restore ${restored.toFixed(0)} health. The empty vesicle collapses.`);
   }
 
@@ -2180,7 +2671,7 @@ export class TidebornGame {
     this.inventory.salt -= 1;
     this.inventory.food -= 1;
     this.inventory.seasonedFood += 1;
-    this.sound.pulse('craft');
+    this.sound.play('craftSuccess');
     this.setMessage('Salt worked into the food. +1 seasoned meal with improved restoration and storage life.');
   }
 
@@ -2200,8 +2691,9 @@ export class TidebornGame {
     }
     this.denDiscovered = true;
     this.recordOctoExperience('exploration', 46, `Claimed ${result.site.name}`, `den:${result.site.id}`);
+    this.tutorial.notify('den-claimed');
     this.createDenMarker(result.site);
-    this.sound.pulse('craft');
+    this.sound.play('denClaim');
     this.showBanner(result.site.name, `Den ${this.denNetwork.discoveredCount()} joined to your planetary home network.`, 4.2);
     this.setMessage('New den claimed. Storage, food, decoration, and reinforcement belong to this chamber.');
   }
@@ -2220,8 +2712,9 @@ export class TidebornGame {
     const reinforcement = 1 + this.octipoints.effect('reinforcement');
     den.mineralReinforcement += reinforcement;
     this.ecosystem.sedimentStability = clamp(this.ecosystem.sedimentStability + 3, 0, 100);
+    this.animateToolUse('reinforce', new THREE.Vector2(this.player.facing, 0.2).normalize(), 'arms', 'eight-arm press');
     this.createDenDecoration('mineral', den.mineralReinforcement, den);
-    this.sound.pulse('craft');
+    this.sound.play('denDecoration');
     this.recordOctoExperience('den-work', 36, `Repaired and reinforced ${den.name}`);
     this.setMessage(`${den.name} reinforced with ${reinforcement} ironstone support${reinforcement === 1 ? '' : 's'}. Collapse resistance increased.`);
   }
@@ -2273,10 +2766,12 @@ export class TidebornGame {
       else if (this.inventory.tubeWormMeat > 0) this.inventory.tubeWormMeat -= 1;
       else this.inventory.food -= 1;
       den.foodStored += 1;
+      this.denDecorations.showStoredFood(den);
       placed = 'Emergency food secured in the sling.';
     }
     if (placed) {
-      this.sound.pulse('craft');
+      this.animateToolUse('place', new THREE.Vector2(this.player.facing, 0.25).normalize(), 'arms', 'multi-arm placement');
+      this.sound.play('denDecoration');
       this.recordOctoExperience('den-work', 22, `Improved ${den.name}`);
       this.setMessage(placed);
     } else {
@@ -2284,75 +2779,14 @@ export class TidebornGame {
     }
   }
 
-  private createDenDecoration(kind: 'brace' | 'storage' | 'curtain' | 'bowl' | 'mineral' | 'bioLight', count: number, den: DenSite): void {
-    const group = new THREE.Group();
-    if (kind === 'brace') {
-      const mat = new THREE.MeshStandardMaterial({ color: '#765337', roughness: 0.95 });
-      const left = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.55, 7), mat);
-      const right = left.clone();
-      const top = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.7, 7), mat);
-      left.position.x = -0.72; right.position.x = 0.72; top.rotation.z = Math.PI / 2; top.position.y = 0.76;
-      group.add(left, right, top);
-      group.position.set(den.x + count * 0.18, den.y - 0.27, 2.7);
-    } else if (kind === 'storage') {
-      const ropeMat = new THREE.LineBasicMaterial({ color: '#c6a76c' });
-      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.45, 0.35, 0), new THREE.Vector3(0, -0.1, 0), new THREE.Vector3(0.45, 0.35, 0)]), ropeMat));
-      const food = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), new THREE.MeshStandardMaterial({ color: '#d8a56b' }));
-      food.scale.y = 0.55;
-      group.add(food);
-      group.position.set(den.x - 0.9, den.y + 0.5 - count * 0.12, 2.7);
-    } else if (kind === 'curtain') {
-      const mat = new THREE.MeshStandardMaterial({ color: '#347a52', side: THREE.DoubleSide });
-      for (let i = 0; i < 6; i += 1) {
-        const strand = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 1.2), mat);
-        strand.position.x = (i - 2.5) * 0.11;
-        group.add(strand);
-      }
-      group.position.set(den.x + Math.min(1.8, den.radius * 0.72), den.y - 0.25, 2.7);
-    } else if (kind === 'bowl') {
-      const bowl = new THREE.Mesh(new THREE.SphereGeometry(0.25, 14, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), new THREE.MeshStandardMaterial({ color: '#d1a577', side: THREE.DoubleSide }));
-      bowl.scale.y = 0.5;
-      group.add(bowl);
-      group.position.set(den.x - 0.55 + count * 0.35, den.y - 0.85, 2.7);
-    } else if (kind === 'mineral') {
-      const ironMat = new THREE.MeshStandardMaterial({ color: '#8f4e3d', roughness: 0.78, metalness: 0.28 });
-      for (let stone = 0; stone < 5; stone += 1) {
-        const nodule = new THREE.Mesh(new THREE.DodecahedronGeometry(0.16 + stone * 0.008, 0), ironMat);
-        nodule.position.set((stone - 2) * 0.22, Math.abs(stone - 2) * 0.04, stone * 0.012);
-        nodule.rotation.z = stone * 0.8;
-        group.add(nodule);
-      }
-      group.position.set(den.x - 0.7 + count * 0.32, den.y - 0.93, 2.8);
-    } else {
-      const strandMaterial = new THREE.MeshStandardMaterial({ color: '#255f4e', roughness: 0.82, emissive: '#174f40', emissiveIntensity: 0.42 });
-      const bulbMaterial = new THREE.MeshBasicMaterial({ color: '#82efd0', transparent: true, opacity: 0.86, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false });
-      for (let strand = 0; strand < 5; strand += 1) {
-        const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.026, 0.46 + strand * 0.035, 6), strandMaterial);
-        stem.position.set((strand - 2) * 0.11, -0.19 - (strand % 2) * 0.05, 0);
-        const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.068 + (strand % 2) * 0.014, 10, 8), bulbMaterial);
-        bulb.position.set(stem.position.x, stem.position.y - 0.23, 0.08);
-        bulb.renderOrder = 55;
-        group.add(stem, bulb);
-      }
-      const marker = new THREE.Mesh(new THREE.RingGeometry(0.38, 0.43, 28), new THREE.MeshBasicMaterial({ color: '#75e4c3', transparent: true, opacity: 0.52, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, side: THREE.DoubleSide }));
-      marker.position.z = -0.03;
-      marker.renderOrder = 54;
-      group.add(marker);
-      const lamp = new THREE.PointLight('#62d6b4', 0.68, 4.2, 1.8);
-      lamp.position.set(0, -0.2, 1.2);
-      group.add(lamp);
-      const side = count % 2 === 0 ? 1 : -1;
-      const tier = Math.floor((count - 1) / 2);
-      group.position.set(den.x + side * Math.min(1.02, den.radius * 0.42), den.y + 0.4 - tier * 0.48, 3.0);
-      // The root disk is pressed into the side wall while the living fronds
-      // hang vertically, so the fixture still reads as seaweed at a glance.
-      group.rotation.z = 0;
+  private createDenDecoration(kind: DenDecorationKind, count: number, den: DenSite): void {
+    const group = this.denDecorations.place(kind, count, den);
+    if (kind === 'bioLight') {
       group.userData.denBiolight = den.id;
       const lights = this.denBiolightVisuals.get(den.id) ?? [];
       lights.push(group);
       this.denBiolightVisuals.set(den.id, lights);
     }
-    this.scene.add(group);
   }
 
   private expireDenBiolightVisuals(denId: string, count: number): void {
@@ -2388,6 +2822,7 @@ export class TidebornGame {
   }
 
   private createDenMarker(den: DenSite): void {
+    this.denDecorations.ensureHabitat(den);
     const group = new THREE.Group();
     const shell = new THREE.Mesh(
       new THREE.SphereGeometry(0.24, 15, 10, 0, Math.PI * 2, 0, Math.PI * 0.58),
@@ -2421,7 +2856,8 @@ export class TidebornGame {
     for (const [key, count] of Object.entries(recipe.ingredients) as [ResourceKey, number][]) this.inventory[key] -= count;
     const fiberBonus = (recipe.id === 'cord' || recipe.id === 'rope') ? this.octipoints.effect('fiberMastery') : 0;
     this.inventory[recipe.id] += 1 + fiberBonus;
-    this.sound.pulse('craft');
+    this.animateToolUse('craft', new THREE.Vector2(this.player.facing, 0.15).normalize(), 'arms', 'eight-arm crafting');
+    this.sound.play('craftSuccess');
     this.recordOctoExperience('crafting', 14, `Crafted ${recipe.name}`);
     this.setMessage(`${recipe.name} completed${fiberBonus ? ` with +${fiberBonus} master-weave bonus` : ''}. ${recipe.description}`);
     this.refreshRecipes();
@@ -2436,15 +2872,33 @@ export class TidebornGame {
     const list = this.craftPanel.querySelector<HTMLElement>('.recipe-list');
     if (!list) return;
     list.innerHTML = '';
+    const readyRecipes = RECIPES.filter((recipe) => this.canCraft(recipe)).length;
+    const summary = this.craftPanel.querySelector<HTMLElement>('[data-craft-summary]');
+    if (summary) summary.textContent = `${readyRecipes} / ${RECIPES.length} recipes ready · ${Object.values(this.inventory).reduce((total, count) => total + count, 0)} items carried`;
     for (const recipe of RECIPES) {
+      const ready = this.canCraft(recipe);
       const button = document.createElement('button');
-      button.className = 'recipe';
-      button.disabled = !this.canCraft(recipe);
-      const ingredients = (Object.entries(recipe.ingredients) as [ResourceKey, number][]).map(([key, count]) => `${count} ${this.prettyResource(key)}`).join(' · ');
-      button.innerHTML = `<span><b>${recipe.name}</b><small>${recipe.description}</small></span><em>${ingredients}</em>`;
+      button.className = `recipe ${ready ? 'ready' : 'missing'}`;
+      button.disabled = !ready;
+      button.dataset.recipeId = recipe.id;
+      button.dataset.recipeName = recipe.name;
+      const ingredients = (Object.entries(recipe.ingredients) as [ResourceKey, number][]).map(([key, count]) => {
+        const owned = this.inventory[key];
+        const sufficient = owned >= count;
+        return `<span class="ingredient-chip ${sufficient ? 'ready' : 'missing'}" title="${this.prettyResource(key)} · ${owned} carried, ${count} required"><img src="${this.craftResourceIcon(key)}" alt=""><b>${owned}/${count}</b><small>${this.prettyResource(key)}</small></span>`;
+      }).join('');
+      button.innerHTML = `<img class="recipe-icon" src="${this.craftResourceIcon(recipe.id)}" alt=""><span class="recipe-copy"><b>${recipe.name}</b><small>${recipe.description}</small><em>OWNED ${this.inventory[recipe.id]}</em></span><span class="recipe-ingredients">${ingredients}</span>`;
       button.addEventListener('click', () => this.craft(recipe));
       list.appendChild(button);
     }
+  }
+
+  private craftResourceIcon(key: ResourceKey): string {
+    return TOOL_DEFINITIONS.find((definition) => definition.resource === key)?.icon
+      ?? MINERAL_DEFINITIONS.find((definition) => definition.id === key)?.icon
+      ?? SUPPLY_HUD_ITEMS.find((item) => item.key === key)?.icon
+      ?? CRAFT_RESOURCE_FALLBACK_ICONS[key]
+      ?? './assets/resources/stone.png';
   }
 
   private prettyResource(key: ResourceKey): string {
@@ -2510,11 +2964,13 @@ export class TidebornGame {
     (this.moon.material as THREE.MeshBasicMaterial).opacity = night * (1 - storm * 0.65);
     const rainMaterial = this.rain.material as THREE.PointsMaterial;
     const snowfall = this.cryosphere.snapshot().local.snowfallIntensity;
-    rainMaterial.opacity = storm * 0.74 * (1 - snowfall);
+    const reduceParticles = this.accessibility.get('reduceParticles');
+    rainMaterial.opacity = storm * 0.74 * (1 - snowfall) * (reduceParticles ? 0.4 : 1);
     this.rain.visible = storm > 0.02 && snowfall < 0.24;
     if (this.rain.visible) {
+      const stride = reduceParticles ? 2 : 1;
       const rainPos = this.rain.geometry.getAttribute('position') as THREE.BufferAttribute;
-      for (let i = 0; i < rainPos.count; i += 1) {
+      for (let i = 0; i < rainPos.count; i += stride) {
         let x = rainPos.getX(i) - storm * 0.065;
         let y = rainPos.getY(i) - (0.18 + storm * 0.28);
         if (y < this.cameraTarget.y - 11) { y = this.cameraTarget.y + 12; x = this.cameraTarget.x + (this.rng() - 0.5) * 38; }
@@ -2522,7 +2978,23 @@ export class TidebornGame {
       }
       rainPos.needsUpdate = true;
     }
-    this.lightning.intensity = storm > 0.75 && Math.sin(this.elapsed * 7.7) > 0.985 ? 13 : 0;
+    const thunderEvents = this.thunderstorm.update({
+      elapsed: this.elapsed,
+      stormStrength: storm,
+      cameraX: this.camera.position.x,
+      cameraY: this.camera.position.y,
+      viewWidth: this.camera.right - this.camera.left,
+      viewHeight: this.camera.top - this.camera.bottom,
+      seaLevel: this.world.seaLevel,
+      depthM: this.depthState.canonicalDepthM,
+    });
+    for (const event of thunderEvents) {
+      this.sound.thunder(event.strength, event.distanceM);
+      this.ecologyJournal.recordStorm(storm, this.elapsed);
+      if (event.near && this.depthState.canonicalDepthM < 80 && this.messageUntil <= this.elapsed) {
+        this.setMessage('THUNDER CRACK · A nearby return stroke flashes across the water. Exposed animals scatter for cover.', 2.4);
+      }
+    }
     this.world.updateTexture(this.elapsed, storm);
   }
 
@@ -2550,6 +3022,20 @@ export class TidebornGame {
     }
     const caveDarkness = Math.pow(1 - this.lightOcclusionState.skyVisibility, 0.62) * 0.997;
     const darkness = Math.max(depthDarkness, caveDarkness);
+    this.vibrationSense.assist(0.75 + this.accessibility.get('darknessAssist') * 0.75);
+    this.vibrationSpeedFactor = this.vibrationSense.update(this.lastFrameDt, {
+      px: this.player.x,
+      py: this.player.y,
+      vx: this.player.vx,
+      vy: this.player.vy,
+      darkness,
+      hasBiolight,
+      gripping: this.player.gripping,
+      jetImpulse: Math.max(
+        Math.max(0, 1 - (this.elapsed - this.lastJetPulseElapsed) / 0.6),
+        this.player.jetBlastDriveSnapshot.active ? 1 : 0,
+      ),
+    });
     this.darknessMaterial.uniforms.uTime.value = this.elapsed;
     this.darknessMaterial.uniforms.uDarkness.value = depthDarkness;
     this.darknessMaterial.uniforms.uCaveDarkness.value = caveDarkness;
@@ -2564,8 +3050,9 @@ export class TidebornGame {
     // The darkness halo, emissive organisms and additive vent effects retain
     // readable biological light without paying for a full-screen multi-pass
     // blur in the abyss. Bloom remains a shallow/twilight accent only.
-    this.bloomPass.enabled = depthDarkness < 0.82;
-    this.bloomPass.strength = (this.reducedBloom ? 0.08 : 0.24) * (1 - depthDarkness * 0.38);
+    const quality = this.accessibility.get('shaderQuality');
+    this.bloomPass.enabled = depthDarkness < 0.82 && quality !== 'low';
+    this.bloomPass.strength = (this.reducedBloom || quality === 'medium' ? 0.08 : 0.24) * (1 - depthDarkness * 0.38);
     this.darknessMaterial.uniforms.uLightCenter.value.set(
       0.5 + (lightX - this.camera.position.x) / 40,
       0.5 + (lightY - this.camera.position.y) / 24,
@@ -2751,6 +3238,7 @@ export class TidebornGame {
     }
     if (this.elapsed < this.nextSurfaceBreedingCheck) return;
     this.nextSurfaceBreedingCheck = this.elapsed + 0.75;
+    if (this.seasonalWorld.breedingWindow.intensity < 0.05 || this.rng() > this.seasonalWorld.breedingWindow.intensity) return;
 
     const kinds: SurfaceCreatureKind[] = ['bird', 'caterpillar', 'snake', 'jelly'];
     for (const kind of kinds) {
@@ -2802,8 +3290,9 @@ export class TidebornGame {
     }
     if (this.ventDiscovered && this.player.x > HADAL_VENT_X + 1 && this.player.y < HADAL_VENT_Y + 2 && this.messageUntil < this.elapsed) {
       this.setMessage('EARTHQUAKE · A red fissure opens beyond the vent. You are not adapted for the trench—yet.');
-      this.camera.position.x += (this.rng() - 0.5) * 0.22;
-      this.camera.position.y += (this.rng() - 0.5) * 0.22;
+      const shake = this.accessibility.get('cameraShake');
+      this.camera.position.x += (this.rng() - 0.5) * 0.22 * shake;
+      this.camera.position.y += (this.rng() - 0.5) * 0.22 * shake;
     }
   }
 
@@ -2858,7 +3347,11 @@ export class TidebornGame {
     this.craftOpen = false;
     this.atlasOpen = false;
     this.craftPanel.classList.remove('open');
+    this.craftPanel.setAttribute('aria-hidden', 'true');
+    this.ui.querySelector<HTMLButtonElement>('[data-craft-toggle]')?.setAttribute('aria-expanded', 'false');
     this.atlasPanel.classList.remove('open');
+    this.atlasPanel.setAttribute('aria-hidden', 'true');
+    this.ui.querySelector<HTMLButtonElement>('[data-map-toggle]')?.setAttribute('aria-expanded', 'false');
     this.keys.held.clear();
     this.keys.pressed.clear();
     this.showResults(result);
@@ -2908,6 +3401,15 @@ export class TidebornGame {
     this.cameraTarget.y = clamp(this.cameraTarget.y, WORLD_MIN_Y + this.viewHeight * 0.5, WORLD_MAX_Y - this.viewHeight * 0.5);
     this.camera.position.x += (this.cameraTarget.x - this.camera.position.x) * Math.min(1, dt * 5);
     this.camera.position.y += (this.cameraTarget.y - this.camera.position.y) * Math.min(1, dt * 5);
+    const shakeScale = this.accessibility?.get('cameraShake') ?? 1;
+    if (shakeScale > 0.01 && this.mode === 'playing') {
+      const trauma = this.stormStrength() * (this.player.underwater ? 0.045 : 0.075);
+      if (trauma > 0.002) {
+        this.cameraShakePhase += dt * 9.3;
+        this.camera.position.x += Math.sin(this.cameraShakePhase * 1.7) * trauma * shakeScale;
+        this.camera.position.y += Math.sin(this.cameraShakePhase * 2.3 + 1.4) * trauma * shakeScale;
+      }
+    }
     for (const cloud of this.scene.children.filter((item) => item.name === 'cloud')) {
       cloud.position.x += (cloud.userData.speed as number) * dt;
       if (cloud.position.x > WORLD_MAX_X + 12) cloud.position.x = WORLD_MIN_X - 12;
@@ -2931,6 +3433,7 @@ export class TidebornGame {
   }
 
   private spawnBurst(x: number, y: number, color: string): void {
+    if (this.accessibility?.get('reduceParticles') && this.rng() > 0.3) return;
     const group = new THREE.Group();
     let material = this.burstMaterials.get(color);
     if (!material) {
@@ -2984,6 +3487,10 @@ export class TidebornGame {
       if (bar) bar.style.setProperty('--value', `${clamp(value, 0, 100)}%`);
     };
     setVital('health', this.survival.health);
+    const audio = this.sound.snapshot() as { music: { currentTrack: string; mood: string; playing: boolean } };
+    setText('[data-now-playing]', audio.music.currentTrack === 'none'
+      ? 'NOW PLAYING · enter the water to start'
+      : `NOW PLAYING · ${audio.music.currentTrack} · ${audio.music.mood.replaceAll('-', ' ').toUpperCase()}${audio.music.playing ? '' : ' · loading'}`);
     setVital('hunger', this.survival.hunger);
     setVital('stamina', this.player.stamina);
     setVital('moisture', this.survival.moisture);
@@ -2999,6 +3506,7 @@ export class TidebornGame {
     const phase = (this.elapsed % DAY_LENGTH) / DAY_LENGTH;
     const phaseName = phase < 0.25 ? 'Morning' : phase < 0.5 ? 'Afternoon' : phase < 0.75 ? 'Evening' : 'Night';
     const season = this.seasonSystem.sample(this.elapsed);
+    if (this.atlasOpen) this.refreshWorldMap();
     setText('[data-ui="day"]', `${['Day one', 'Day two', 'Day three'][day - 1]} · ${phaseName}`);
     setText('[data-ui="season"]', season.id === 'winter'
       ? 'First winter has arrived'
@@ -3134,9 +3642,11 @@ export class TidebornGame {
     const width = this.root.clientWidth;
     const height = this.root.clientHeight;
     const requestedRatio = Math.min(window.devicePixelRatio, this.depthPerformance.pixelRatioCap);
+    const quality = this.accessibility?.get('shaderQuality') ?? 'high';
+    const pixelBudget = quality === 'low' ? 1280 * 720 : quality === 'medium' ? 1920 * 1080 : MAX_RENDER_PIXELS;
     const requestedPixels = width * height * requestedRatio * requestedRatio;
-    this.renderPixelRatio = requestedPixels > MAX_RENDER_PIXELS
-      ? requestedRatio * Math.sqrt(MAX_RENDER_PIXELS / requestedPixels)
+    this.renderPixelRatio = requestedPixels > pixelBudget
+      ? requestedRatio * Math.sqrt(pixelBudget / requestedPixels)
       : requestedRatio;
     const ratioChanged = Math.abs(this.renderer.getPixelRatio() - this.renderPixelRatio) > 0.001;
     const sizeChanged = width !== this.renderWidth || height !== this.renderHeight;
@@ -3166,22 +3676,11 @@ export class TidebornGame {
   }
 
   private save(): void {
-    const payload = {
-      elapsed: this.elapsed,
-      inventory: this.inventory,
-      denNetwork: this.denNetwork.snapshot(this.player.x, this.player.y),
-      ecosystem: this.ecosystem,
-      jetBlastMastery: this.jetBlast.mastery,
-      equippedTool: this.toolbelt.snapshot(this.inventory).selected,
-      octipoints: this.octipoints.snapshot(),
-      player: { x: this.player.x, y: this.player.y },
-      gathered: this.entities.filter((entity) => entity.gathered).map((entity) => entity.id),
-    };
-    localStorage.setItem('tideborn-autosave', JSON.stringify(payload));
+    this.saveLoad.autosave();
   }
 
   private reset(): void {
-    localStorage.removeItem('tideborn-autosave');
+    this.saveLoad.eraseSlot(AUTOSAVE_SLOT);
     window.location.reload();
   }
 
@@ -3253,6 +3752,7 @@ export class TidebornGame {
       coordinateSystem: 'local field meters use +x east and +y upward; depthRoute maps the streamed cave to canonical planetary depth',
       planetScale: this.planetScale.state(this.depthState.canonicalDepthM),
       planetBelt: this.beltTraversal.state(this.player.x, this.planetScale),
+      worldMap: this.worldMap.snapshot(this.denNetwork.snapshot(this.player.x, this.player.y).sites),
       landmasses: this.landmasses.snapshot(),
       trees: this.trees.snapshot(),
       treeInteraction: this.treeInteraction.snapshot(this.player.x, this.player.y),
@@ -3268,7 +3768,9 @@ export class TidebornGame {
         },
         matter: this.world.performanceSnapshot(),
       },
+      audio: this.sound.snapshot(),
       oceanSurface: this.oceanSurface.snapshot(),
+      thunderstorm: this.thunderstorm.snapshot(),
       mobileCamera: {
         ...this.mobileCamera,
         appliedViewHeightM: this.viewHeight,
@@ -3280,8 +3782,11 @@ export class TidebornGame {
       mode: this.mode,
       settingsOpen: this.settingsOpen,
       objective: 'Reach first winter with seven linked dens or one large winter-ready den.',
+      tutorial: this.tutorial.snapshot(this.player.x, this.player.y),
       season: this.seasonSystem.sample(this.elapsed),
       cryosphere: this.cryosphere.snapshot(),
+      seasonalWorld: this.seasonalWorld.snapshot(this.player.x, this.player.y),
+      vibrationSense: this.vibrationSense.snapshot(this.player.x, this.player.y),
       seasonalMoisture: this.moistureEnvironment,
       contestSession: this.contestSession.snapshot(this.contestInput()),
       time: {
@@ -3300,10 +3805,13 @@ export class TidebornGame {
         camouflageColor: this.player.camouflageColorHex, concealed: this.player.concealed, concealmentSource: this.player.concealmentSource,
         inkCooldown: Number(this.player.inkCooldown.toFixed(2)), inkRemaining: Number(this.player.inkTime.toFixed(2)),
         technique: this.player.technique, stamina: Number(this.player.stamina.toFixed(1)),
+        staminaRecoveryPerSecond: Number(this.player.staminaRecoveryRate.toFixed(1)),
         jetCharges: this.player.jetCharges, jetRechargeRemaining: Number(this.player.jetRechargeRemaining.toFixed(2)),
         lastJetDirection: { x: Number(this.player.lastJetDirection.x.toFixed(2)), y: Number(this.player.lastJetDirection.y.toFixed(2)) },
         lastJetStrength: this.player.lastJetStrength,
+        jetBlastDrive: this.player.jetBlastDriveSnapshot,
         armTrail: this.player.armTrailSnapshot,
+        toolUsePose: this.player.toolUseSnapshot,
         sweptTerrainContact: this.player.sweptContactSnapshot,
         tiltDegrees: Number(THREE.MathUtils.radToDeg(this.player.swimTilt).toFixed(1)), inDen: Boolean(this.denNetwork.currentDen(this.player.x, this.player.y)),
       },
@@ -3319,7 +3827,14 @@ export class TidebornGame {
       octipoints: this.octipoints.snapshot(),
       supplyCollectibles: nearbySupplies,
       toolbelt: this.toolbelt.snapshot(this.inventory),
-      den: { ...this.denNetwork.totals(), ...this.denNetwork.snapshot(this.player.x, this.player.y), discovered: this.denDiscovered, excavatedCells: this.world.modifiedCells, prepared: this.isPrepared() },
+      toolUseAnimation: this.toolUseVisuals.snapshot(),
+      den: { ...this.denNetwork.totals(), ...this.denNetwork.snapshot(this.player.x, this.player.y), decorations: this.denDecorations.snapshot(), discovered: this.denDiscovered, excavatedCells: this.world.modifiedCells, prepared: this.isPrepared() },
+      denBuilder: this.denBuilder.snapshot(this.player.x, this.player.y),
+      ecologyJournal: this.ecologyJournal.snapshot(this.player.x, this.player.y),
+      huntingFeedback: this.huntingFeedback.snapshot(this.player.x, this.player.y),
+      survivorRelations: this.survivorRelations.snapshot(this.player.x, this.player.y),
+      discoveries: this.discoveries.snapshot(this.player.x, this.player.y),
+      accessibility: this.accessibility.snapshot(this.player.x, this.player.y),
       ecosystem: this.ecosystem,
       marineLife,
       deepSeaLife,
@@ -3338,6 +3853,11 @@ export class TidebornGame {
       nearbyMinerals,
       prompt: this.messageUntil > this.elapsed ? this.message : nearbyPrompt,
       craftingOpen: this.craftOpen,
+      craftingMenu: {
+        open: this.craftOpen,
+        totalRecipes: RECIPES.length,
+        readyRecipes: RECIPES.filter((recipe) => this.canCraft(recipe)).length,
+      },
       atlasOpen: this.atlasOpen,
       resultsVisible: this.ui.querySelector<HTMLElement>('[data-ui="results"]')?.getAttribute('aria-hidden') === 'false',
       ventDiscovered: this.ventDiscovered,

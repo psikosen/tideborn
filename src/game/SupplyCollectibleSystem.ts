@@ -68,6 +68,21 @@ export class SupplyCollectibleSystem {
     }
   }
 
+  serializeCollected(): string[] {
+    return this.collectibles.filter((collectible) => collectible.collected).map((collectible) => collectible.id);
+  }
+
+  deserializeCollected(data: unknown): void {
+    if (!Array.isArray(data)) return;
+    const collectedIds = new Set(data.filter((id): id is string => typeof id === 'string'));
+    for (const collectible of this.collectibles) {
+      if (collectedIds.has(collectible.id)) {
+        collectible.collected = true;
+        collectible.sprite.visible = false;
+      }
+    }
+  }
+
   nearest(x: number, y: number, range: number): SupplyCollectible | null {
     let nearest: SupplyCollectible | null = null;
     let best = range;

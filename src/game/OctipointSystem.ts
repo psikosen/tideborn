@@ -61,6 +61,10 @@ export interface OctipointPurchase {
   node?: OctipointNodeDefinition;
 }
 
+const OCTIPOINT_XP_BASE = 140;
+const OCTIPOINT_XP_STEP = 20;
+const OCTIPOINT_XP_CAP = 220;
+
 export const OCTIPOINT_BRANCHES: OctipointBranchDefinition[] = [
   { id: 'manipulation', label: 'Manipulation', motto: 'Use all eight arms', color: '#40e4dc', icon: '⌁' },
   { id: 'mobility', label: 'Mobility', motto: 'Move like water', color: '#b069ff', icon: '➜' },
@@ -105,7 +109,6 @@ export class OctipointSystem {
   private availablePoints = 1;
   private totalEarned = 1;
   private experience = 0;
-  private readonly experienceToNext = 100;
   private readonly unlocked = new Set<string>();
   private readonly uniqueAwards = new Set<string>();
   private readonly activities: OctipointActivityRecord[] = [];
@@ -117,11 +120,13 @@ export class OctipointSystem {
     this.activities.unshift({ activity, xp: safeXp, detail });
     this.activities.length = Math.min(this.activities.length, 8);
     let pointsGained = 0;
-    while (this.experience >= this.experienceToNext) {
-      this.experience -= this.experienceToNext;
+    let requirement = this.experienceRequirement();
+    while (this.experience >= requirement) {
+      this.experience -= requirement;
       this.availablePoints += 1;
       this.totalEarned += 1;
       pointsGained += 1;
+      requirement = this.experienceRequirement();
     }
     return this.awardSnapshot(true, safeXp, pointsGained);
   }
@@ -165,6 +170,7 @@ export class OctipointSystem {
     purchasable: string[];
     activity: OctipointActivityRecord[];
     effects: Record<OctipointEffect, number>;
+    progression: { baseXp: number; stepXp: number; capXp: number; starterPoint: boolean };
   } {
     const effectNames: OctipointEffect[] = [
       'clamPry', 'harvestYield', 'digPower', 'digRadius', 'jetForce', 'jetRecovery', 'huntEfficiency',
@@ -175,12 +181,74 @@ export class OctipointSystem {
       availablePoints: this.availablePoints,
       totalEarned: this.totalEarned,
       experience: this.experience,
-      experienceToNext: this.experienceToNext,
+      experienceToNext: this.experienceRequirement(),
       unlocked: [...this.unlocked],
       purchasable: OCTIPOINT_NODES.filter((node) => this.canPurchase(node.id)).map((node) => node.id),
       activity: this.activities.map((record) => ({ ...record })),
       effects: Object.fromEntries(effectNames.map((effect) => [effect, this.effect(effect)])) as Record<OctipointEffect, number>,
+      progression: { baseXp: OCTIPOINT_XP_BASE, stepXp: OCTIPOINT_XP_STEP, capXp: OCTIPOINT_XP_CAP, starterPoint: true },
     };
+  }
+
+  serialize(): {
+    version: 1;
+    availablePoints: number;
+    totalEarned: number;
+    experience: number;
+    unlocked: string[];
+    uniqueAwards: string[];
+    activities: OctipointActivityRecord[];
+  } {
+    return {
+      version: 1,
+      availablePoints: this.availablePoints,
+      totalEarned: this.totalEarned,
+      experience: this.experience,
+      unlocked: [...this.unlocked],
+      uniqueAwards: [...this.uniqueAwards],
+      activities: this.activities.map((record) => ({ ...record })),
+    };
+  }
+
+  deserialize(data: unknown): void {
+    if (typeof data !== 'object' || data === null) return;
+    const section = data as {
+      version?: unknown; availablePoints?: unknown; totalEarned?: unknown; experience?: unknown;
+      unlocked?: unknown; uniqueAwards?: unknown; activities?: unknown;
+    };
+    if (section.version !== 1) return;
+    const points = Number(section.availablePoints);
+    const earned = Number(section.totalEarned);
+    const xp = Number(section.experience);
+    if (Number.isFinite(points) && points >= 0) this.availablePoints = Math.floor(points);
+    if (Number.isFinite(earned) && earned >= 0) this.totalEarned = Math.floor(earned);
+    if (Number.isFinite(xp) && xp >= 0) this.experience = Math.floor(xp);
+    if (Array.isArray(section.unlocked)) {
+      this.unlocked.clear();
+      for (const id of section.unlocked) {
+        if (typeof id === 'string' && OCTIPOINT_NODES.some((node) => node.id === id)) this.unlocked.add(id);
+      }
+    }
+    if (Array.isArray(section.uniqueAwards)) {
+      this.uniqueAwards.clear();
+      for (const key of section.uniqueAwards) if (typeof key === 'string') this.uniqueAwards.add(key);
+    }
+    if (Array.isArray(section.activities)) {
+      this.activities.length = 0;
+      for (const record of section.activities) {
+        if (typeof record !== 'object' || record === null) continue;
+        const candidate = record as Partial<OctipointActivityRecord>;
+        if (typeof candidate.activity === 'string' && typeof candidate.xp === 'number' && typeof candidate.detail === 'string') {
+          this.activities.push({ activity: candidate.activity as OctipointActivity, xp: candidate.xp, detail: candidate.detail });
+        }
+      }
+      this.activities.length = Math.min(this.activities.length, 8);
+    }
+  }
+
+  private experienceRequirement(): number {
+    const earnedThroughExperience = Math.max(0, this.totalEarned - 1);
+    return Math.min(OCTIPOINT_XP_CAP, OCTIPOINT_XP_BASE + earnedThroughExperience * OCTIPOINT_XP_STEP);
   }
 
   private awardSnapshot(accepted: boolean, xpAdded: number, pointsGained: number): OctipointAward {
@@ -190,7 +258,7 @@ export class OctipointSystem {
       pointsGained,
       availablePoints: this.availablePoints,
       experience: this.experience,
-      experienceToNext: this.experienceToNext,
+      experienceToNext: this.experienceRequirement(),
     };
   }
 }

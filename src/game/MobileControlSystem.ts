@@ -24,6 +24,7 @@ export interface MobileControlSnapshot extends MobileLayoutSnapshot {
 
 export interface MobileControlOptions {
   onLayoutChange?: (layout: MobileLayoutSnapshot) => void;
+  moveSensitivity?: number;
 }
 
 type DirectionKey = 'KeyA' | 'KeyD' | 'KeyW' | 'KeyS';
@@ -53,9 +54,11 @@ export class MobileControlSystem {
   private aimX = 1;
   private aimY = 0;
   private digging = false;
+  private moveSensitivity = 1;
 
   constructor(private readonly root: HTMLElement, options: MobileControlOptions = {}) {
     this.options = options;
+    this.moveSensitivity = Math.max(0.4, Math.min(2.5, options.moveSensitivity ?? 1));
     this.element = document.createElement('section');
     this.element.className = 'mobile-controls';
     this.element.setAttribute('aria-label', 'Portrait touch controls');
@@ -113,6 +116,10 @@ export class MobileControlSystem {
     this.root.classList.remove('has-mobile-controls');
   }
 
+  setMoveSensitivity(value: number): void {
+    this.moveSensitivity = Math.max(0.4, Math.min(2.5, value));
+  }
+
   private actionButton(action: string, label: string, code: string, description: string, hold = false): string {
     return `<button class="mobile-action mobile-action--${action}" data-mobile-action="${action}" data-key-code="${code}" data-hold="${hold}" aria-label="${description}"><b>${label}</b><small>${hold ? 'HOLD' : description}</small></button>`;
   }
@@ -127,7 +134,11 @@ export class MobileControlSystem {
       let x = (event.clientX - (rect.left + rect.width / 2)) / radius;
       let y = (event.clientY - (rect.top + rect.height / 2)) / radius;
       const length = Math.hypot(x, y);
-      if (length > 1) { x /= length; y /= length; }
+      if (length > 0.001) {
+        const scaled = length * this.moveSensitivity;
+        x = x / length * Math.min(1, scaled);
+        y = y / length * Math.min(1, scaled);
+      }
       this.moveX = x;
       this.moveY = -y;
       knob.style.transform = `translate(${(x * radius).toFixed(1)}px, ${(y * radius).toFixed(1)}px)`;
