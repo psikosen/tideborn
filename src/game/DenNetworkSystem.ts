@@ -162,6 +162,43 @@ export class DenNetworkSystem {
     };
   }
 
+  serializeState(): DenSite[] {
+    return this.sites.map((site) => ({
+      ...site,
+      artifacts: [...site.artifacts],
+    }));
+  }
+
+  deserializeState(data: unknown): void {
+    if (!Array.isArray(data)) return;
+    const restored: DenSite[] = [];
+    for (const entry of data) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const candidate = entry as Partial<DenSite>;
+      if (typeof candidate.id !== 'string' || typeof candidate.x !== 'number' || typeof candidate.y !== 'number') continue;
+      restored.push({
+        id: candidate.id,
+        name: typeof candidate.name === 'string' ? candidate.name : candidate.id,
+        x: candidate.x,
+        y: candidate.y,
+        radius: typeof candidate.radius === 'number' ? candidate.radius : 2.45,
+        discovered: candidate.discovered === true,
+        braces: Math.max(0, Math.floor(typeof candidate.braces === 'number' ? candidate.braces : 0)),
+        storage: Math.max(0, Math.floor(typeof candidate.storage === 'number' ? candidate.storage : 0)),
+        curtains: Math.max(0, Math.floor(typeof candidate.curtains === 'number' ? candidate.curtains : 0)),
+        bowls: Math.max(0, Math.floor(typeof candidate.bowls === 'number' ? candidate.bowls : 0)),
+        foodStored: Math.max(0, Math.floor(typeof candidate.foodStored === 'number' ? candidate.foodStored : 0)),
+        mineralReinforcement: Math.max(0, Math.floor(typeof candidate.mineralReinforcement === 'number' ? candidate.mineralReinforcement : 0)),
+        bioLights: Math.max(0, Math.floor(typeof candidate.bioLights === 'number' ? candidate.bioLights : 0)),
+        artifacts: Array.isArray(candidate.artifacts) ? candidate.artifacts.filter((item): item is string => typeof item === 'string') : [],
+        destroyed: candidate.destroyed === true,
+        collapseReason: typeof candidate.collapseReason === 'string' ? candidate.collapseReason : undefined,
+      });
+    }
+    if (restored.length === 0 || !restored.some((site) => site.id === 'starter-den')) return;
+    this.sites = restored;
+  }
+
   private shelterScore(x: number, y: number, world: MatterWorld): number {
     const rayCount = 20;
     let blocked = 0;

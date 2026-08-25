@@ -104,6 +104,49 @@ export class RareRelicSystem {
     }
   }
 
+  serializeDrops(): { version: 1; drops: Array<{ id: string; relic: RelicId; x: number; y: number }>; carried: RelicId[]; nextId: number } {
+    return {
+      version: 1,
+      drops: this.drops.filter((drop) => !drop.collected).map((drop) => ({ id: drop.id, relic: drop.relic, x: drop.x, y: drop.y })),
+      carried: [...this.carried],
+      nextId: this.nextId,
+    };
+  }
+
+  deserializeDrops(data: unknown): void {
+    if (typeof data !== 'object' || data === null) return;
+    const record = data as { version?: unknown; drops?: unknown; carried?: unknown; nextId?: unknown };
+    if (record.version !== 1) return;
+    if (Array.isArray(record.carried)) {
+      for (const id of record.carried) {
+        if (typeof id === 'string' && this.definitions.has(id as RelicId)) this.carried.push(id as RelicId);
+      }
+    }
+    if (!Array.isArray(record.drops)) return;
+    for (const entry of record.drops) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const item = entry as { id?: unknown; relic?: unknown; x?: unknown; y?: unknown };
+      if (typeof item.relic !== 'string' || !this.definitions.has(item.relic as RelicId)) continue;
+      if (typeof item.x !== 'number' || typeof item.y !== 'number') continue;
+      if (this.drops.some((existing) => existing.id === item.id)) continue;
+      const visual = this.createVisual(item.relic as RelicId);
+      const drop: RelicDrop = {
+        id: typeof item.id === 'string' ? item.id : `relic-${this.nextId++}`,
+        relic: item.relic as RelicId,
+        x: item.x,
+        y: item.y,
+        phase: this.rng() * Math.PI * 2,
+        collected: false,
+        visual,
+      };
+      visual.position.set(drop.x, drop.y, 4.15);
+      visual.userData.relicId = drop.relic;
+      this.scene.add(visual);
+      this.drops.push(drop);
+    }
+    if (typeof record.nextId === 'number') this.nextId = Math.max(this.nextId, Math.floor(record.nextId));
+  }
+
   nearest(x: number, y: number, range: number): RelicDrop | null {
     let nearest: RelicDrop | null = null;
     let best = range;

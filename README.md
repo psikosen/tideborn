@@ -1,5 +1,7 @@
 # Tideborn
 
+The local audio pipeline is reproducible with `npm run build:audio`. It converts the entrant-supplied source library into stable browser cues documented in `audio-cue-catalog.md`; `GameAudioSystem` handles alternates, lazy cue decoding, depth ambience, and an 11-track adaptive soundtrack with coast/open-ocean/deep/storm/winter playlists, crossfades, separate music volume, and manual track skipping.
+
 Tideborn is a playable Three.js/HTML5 vertical slice for a planetary 2.5D survival game. You control a future-evolved amphibious octopus in a deterministic, granular coastal cross-section. Gather food, hunt fish, physically uproot kelp, craft rope technology, excavate a network of dens, and survive the storm arriving on day three.
 
 ## Run it
@@ -9,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5173`. The title screen offers **Enter the water**, **Continue** (enabled when an autosave exists), **Load ▸** (manual slots), and **Settings** (accessibility panel).
 
 Production build:
 
@@ -42,8 +44,8 @@ npm run preview
 | I | Open or close crafting |
 | C | Toggle adaptive camouflage; chromatophores match the live terrain material beneath the body |
 | Ctrl + S | Squeeze through a narrow passage |
-| T | Sleep inside the den |
-| M | Open or close the planetary scale atlas |
+| T | Sleep inside the den · inside a claimed den with other dens, opens den-network travel |
+| M | Open or close the fog-of-war world map and discovered-den atlas |
 | Esc | Pause or close crafting |
 | F | Toggle fullscreen |
 
@@ -77,11 +79,25 @@ The abyss route has a biological visibility requirement. Harvest the luminous se
 - `DenNetworkSystem`: independently claimed chamber sites, shelter-ray validation, wrapped-world distance checks, per-den furnishing/food/reinforcement state, and network-wide preparedness totals.
 - `PlanetScaleSystem`: canonical planet dimensions, wrapped longitude, seawater pressure, Earth/Moon comparison, depth-zone definitions, and the boundary between local matter meters and planetary streaming.
 - `PlanetBeltTraversalSystem`: converts the finite active cell belt into continuous canonical longitude, counts complete revolutions, and coordinates seamless east/west wrapping without exposing a map boundary.
+- `WorldMapSystem`: tracks session exploration on a wrapped longitude/depth grid, renders a fogged full-world 2D terrain slice, joins visibility across the planetary seam, and marks only discovered dens plus the live player position.
 - `DepthAccessSystem`: maps the local cave route onto canonical ocean depth and reports black-water/biolight navigation state without placing an invisible movement gate.
 - `OccludedLightSystem`: casts 160 CPU rays through the live 2D matter grid and uploads a tiny radial visibility texture. The GPU darkness shader uses it for terrain shadows, soft penumbra, living-light pulse, and tunnel daylight loss; digging changes the mask immediately.
 - `TidebornGame`: planet-belt scene, orthographic camera, water/sky shaders, resource interactions, twelve core recipe outcomes plus mineral alternatives, den-network integration, survival, ecosystem summaries, weather, wildlife, save snapshots, and objective flow.
 - `render_game_to_text()`: concise, machine-readable live state for automated or accessible testing.
 - `advanceTime(ms)`: deterministic stepping for gameplay tests; long skips use bounded regional-summary slices.
+
+## Feature systems
+
+- `SaveLoadSystem`: versioned (v2) four-slot save system (`tideborn-autosave` plus three manual slots) with per-section registration, FNV-1a checksum verification, quota-safe localStorage access, v1→v2 migration, and `window.tidebornSave` console access. Sections persist core state, ecosystem, progression, Octipoints, fog-of-war map exploration, the full den network, excavation diffs (`MatterWorld.serializeModifiedCells()` keeps a pristine baseline and stores only changed cells), journal history, hunting stats, survivor relationships, discoveries, and tutorial progress. The game now restores the autosave on boot; previously it only wrote one.
+- `DenBuilderSystem` [L, 9]: dedicated den-building mode with flood-fill room detection (volume, enclosure %, entrances, roof thickness), named chambers, cycling decoration ghost previews, structural-stability scoring by span/material, flooding warnings, and a 0–100 winter-readiness rating with checklist.
+- `EcologyJournal` [P]: causal rule engine over ecosystem deltas ("kelp loss reduced fish shelter", predator release, sediment smothering), storm entries, unlockable pattern concepts, and a filterable parchment overlay.
+- `VibrationSenseSystem`: dark-water navigation without biolight — motion rings, jet pulses, and sucker-contact patches reveal nearby surfaces as fading outlines while movement slows to ~62%; an assist hook scales brightness for accessibility.
+- `HuntingFeedbackSystem`: per-predator health/injury ledgers, awareness detection meters above threats, lunge/bite arcs, dodge detection with stamina reward, decaying prey remains that attract scavengers, feeding states, and daily hunt counters.
+- `SurvivorRelationsSystem`: persistent trust/rivalry ledger per survivor octopus driving trade offers, food gifts, storm-warning sharing, den contests, theft, cooperation, mating, betrayal ripples when a conspecific is devoured, and turn-predator outcomes.
+- `SeasonalWorldEffectsSystem`: layered seasonal transformation — winter food scarcity multiplier on yields, bird migration phases, reef-fish depth shifts, breeding-window gating of surface births, den temperature model, spring thaw flood risk, snow-drift accumulation with waterline visuals.
+- `DiscoveryLoreSystem` [0]: deterministic wrapped-longitude discovery bands — fossils, ancient tools, shipwreck fragments, geothermal artifacts, rare organisms, and etched-slate storytelling revealed by digging or proximity, recovered with E, archived in a codex overlay.
+- `OnboardingTutorialSystem`: guided first day (move → dive → hunt → gather → dig → craft → claim den → jets → brace → storm-prep checklist) with non-blocking coach card, gentle step skipping after 150 s, and persistent completion state.
+- `AccessibilitySettingsSystem` [⚙ A11Y button]: persisted settings for predator-alert intensity (drives shared alert visuals), darkness assistance (drives vibration sense), reduced particles (rain density/opacity), shader quality (bloom + pixel budget), camera shake, touch sensitivity (mobile stick scaling), UI text scale (`--tb-ui-scale` zoom on the HUD), color-safe alerts, and reduced motion.
 
 ## Current slice
 

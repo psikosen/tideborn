@@ -46,6 +46,10 @@ const DEFINITIONS: readonly TreeDefinition[] = [
   { id: 'primitive-fern', width: 3.1, height: 3.6, weight: 0.72, burialFraction: 0.13, wind: { flexibility: 1.28, crownFlutter: 1.4, stormLean: 1.34, windStart: 0.46 } },
 ] as const;
 
+// Trees should read as major climbable landscape features beside a roughly
+// one-metre octopus, not as shrubs. Size remains seed-varied per instance.
+export const PROCEDURAL_TREE_SCALE = { minimum: 0.9, maximum: 1.8 } as const;
+
 /** Generated art plus deterministic placement/scale/tint/sway variation. */
 export class ProceduralTreeSystem {
   private instances: TreeInstance[] = [];
@@ -150,7 +154,7 @@ export class ProceduralTreeSystem {
     const definition = this.instances.length < DEFINITIONS.length
       ? DEFINITIONS[this.instances.length]
       : this.pickDefinition(sampledSurfaceY);
-    const scale = 0.68 + this.rng() * 0.72;
+    const scale = THREE.MathUtils.lerp(PROCEDURAL_TREE_SCALE.minimum, PROCEDURAL_TREE_SCALE.maximum, this.rng());
     const texture = textures.get(definition.id);
     if (!texture) return;
     const placement = this.terrainPlacementAt(x, definition.width * scale, definition.height * scale, definition.burialFraction);

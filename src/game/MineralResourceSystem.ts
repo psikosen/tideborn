@@ -104,6 +104,45 @@ export class MineralResourceSystem {
     }
   }
 
+  serializeDrops(): Array<{ id: string; mineral: MineralKey; x: number; y: number }> {
+    return this.drops
+      .filter((drop) => !drop.collected)
+      .map((drop) => ({ id: drop.id, mineral: drop.mineral, x: drop.x, y: drop.y }));
+  }
+
+  deserializeDrops(data: unknown): void {
+    if (!Array.isArray(data)) return;
+    for (const entry of data) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const record = entry as { id?: unknown; mineral?: unknown; x?: unknown; y?: unknown };
+      if (typeof record.mineral !== 'string' || !this.definitions.has(record.mineral as MineralKey)) continue;
+      if (typeof record.x !== 'number' || typeof record.y !== 'number') continue;
+      if (this.drops.some((existing) => existing.id === record.id)) continue;
+      const mineral = record.mineral as MineralKey;
+      const definition = this.definitions.get(mineral)!;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: this.textures.get(mineral),
+        transparent: true,
+        depthWrite: false,
+        color: '#ffffff',
+      }));
+      sprite.userData.mineralLabel = definition.label;
+      sprite.renderOrder = 16;
+      const drop: MineralDrop = {
+        id: typeof record.id === 'string' ? record.id : `mineral-${this.nextId++}`,
+        mineral,
+        x: record.x,
+        y: record.y,
+        phase: this.rng() * Math.PI * 2,
+        collected: false,
+        sprite,
+      };
+      this.scene.add(sprite);
+      this.drops.push(drop);
+    }
+    this.nextId = Math.max(this.nextId, this.drops.length + 1);
+  }
+
   nearest(x: number, y: number, range: number): MineralDrop | null {
     let nearest: MineralDrop | null = null;
     let best = range;

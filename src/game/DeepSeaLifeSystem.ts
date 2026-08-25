@@ -181,7 +181,9 @@ export class DeepSeaLifeSystem {
       const dx = player.x - creature.x;
       const dy = player.y - creature.y;
       const distance = Math.hypot(dx, dy);
-      creature.visual.visible = Math.abs(dx) < 26 && Math.abs(dy) < 15;
+      // Keep the complete regional population summarized off-screen, but do
+      // detailed predator AI and rendering only around the actual camera.
+      creature.visual.visible = Math.abs(dx) < 18 && Math.abs(dy) < 11;
       if (!creature.visual.visible) continue;
 
       const mature = this.lifecycle.isMature(creature.life);

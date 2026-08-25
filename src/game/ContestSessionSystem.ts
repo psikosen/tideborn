@@ -1,6 +1,6 @@
 import type { DenSite } from './DenNetworkSystem';
 
-export type ContestResultReason = 'seven-den-network' | 'winter-fortress' | 'death' | 'den-collapse';
+export type ContestResultReason = 'seven-den-network' | 'winter-fortress' | 'death' | 'den-collapse' | 'second-spring';
 
 export interface WinterReadiness {
   denId: string;
@@ -139,8 +139,36 @@ export class ContestSessionSystem {
     return this.completedResult;
   }
 
+  finishCampaign(input: ContestSessionInput): ContestResult {
+    if (this.completedResult?.reason === 'second-spring') return this.completedResult;
+    const assessment = this.assess(input);
+    const densFound = assessment.winPaths.network.currentDens;
+    const bestDen = assessment.winPaths.solo.bestDen;
+    const surviving = input.dens.filter((den) => !den.destroyed).length;
+    this.completedResult = {
+      outcome: 'won',
+      reason: 'second-spring',
+      title: 'The second spring',
+      subtitle: 'Ice releases the shallows and the kelp forests green again. Two winters survived — Pelagos-730 knows your name now.',
+      elapsedSeconds: input.elapsedSeconds,
+      densFound,
+      survivingDens: surviving,
+      lostDens: Math.max(0, densFound - surviving),
+      excavatedCells: input.excavatedCells,
+      winterFood: bestDen?.winterFood ?? input.carriedFood,
+      bestDen,
+      summary: [
+        `${Math.floor(input.elapsedSeconds / 90) + 1} days across two winters`,
+        `${surviving} den${surviving === 1 ? '' : 's'} still holding`,
+        `${input.excavatedCells} terrain cells reshaped`,
+        bestDen ? `Finest chamber · ${bestDen.denName} (${Math.round(bestDen.score * 100)}% ready)` : 'A nomad through the cold',
+      ],
+    };
+    return this.completedResult;
+  }
+
   finishDeath(input: ContestSessionInput): ContestResult {
-    if (this.completedResult) return this.completedResult;
+    if (this.completedResult?.reason === 'death') return this.completedResult;
     const assessment = this.assess(input);
     const densFound = assessment.winPaths.network.currentDens;
     this.completedResult = {

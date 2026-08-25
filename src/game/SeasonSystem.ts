@@ -1,4 +1,4 @@
-export type SeasonId = 'late-summer' | 'autumn' | 'storm-season' | 'winter';
+export type SeasonId = 'late-summer' | 'autumn' | 'storm-season' | 'winter' | 'spring' | 'summer';
 
 export interface SeasonState {
   id: SeasonId;
@@ -32,23 +32,38 @@ interface SeasonPhase {
 }
 
 /**
- * Maps the short contest clock onto a readable seasonal arc. This is kept
- * separate from weather so a longer campaign can later replace the four
- * prototype phases without changing survival or session-end code.
+ * Maps the campaign clock onto a full two-year seasonal arc: the first autumn
+ * storm hardens into winter, then the climate cycles through thaw, growth, and
+ * decline again. Surviving to the second spring is the campaign's victory.
  */
 export class SeasonSystem {
-  private readonly phases: SeasonPhase[];
+  static readonly SEASON_LENGTH_DAYS = 2;
+
+  private readonly phases: SeasonPhase[] = [];
+  private readonly firstWinterAt: number;
 
   constructor(
     readonly dayLengthSeconds: number,
     readonly winterAtSeconds: number,
   ) {
-    this.phases = [
+    const day = dayLengthSeconds;
+    this.firstWinterAt = winterAtSeconds;
+    const seasonSpan = day * SeasonSystem.SEASON_LENGTH_DAYS;
+    const winter1End = winterAtSeconds + seasonSpan;
+    const spring1Start = winter1End;
+    const spring1End = spring1Start + seasonSpan;
+    const summerStart = spring1End;
+    const summerEnd = summerStart + seasonSpan;
+    const autumn2Start = summerEnd;
+    const autumn2End = autumn2Start + seasonSpan;
+    const winter2Start = autumn2End;
+    const winter2End = winter2Start + seasonSpan;
+    this.phases.push(
       {
         id: 'late-summer',
         label: 'Late summer',
         startsAt: 0,
-        endsAt: dayLengthSeconds,
+        endsAt: day,
         temperatureOffsetC: [0, -0.7],
         daylightHours: [14.4, 13.2],
         snowfallPotential: [0, 0.04],
@@ -61,8 +76,8 @@ export class SeasonSystem {
       {
         id: 'autumn',
         label: 'Autumn',
-        startsAt: dayLengthSeconds,
-        endsAt: dayLengthSeconds * 2.4,
+        startsAt: day,
+        endsAt: day * 2.4,
         temperatureOffsetC: [-0.7, -2.2],
         daylightHours: [13.2, 11.2],
         snowfallPotential: [0.04, 0.28],
@@ -75,7 +90,7 @@ export class SeasonSystem {
       {
         id: 'storm-season',
         label: 'Storm season',
-        startsAt: dayLengthSeconds * 2.4,
+        startsAt: day * 2.4,
         endsAt: winterAtSeconds,
         temperatureOffsetC: [-2.2, -4.4],
         daylightHours: [11.2, 9.4],
@@ -84,23 +99,97 @@ export class SeasonSystem {
         snowLineM: [7, 2.2],
         relativeHumidityPercent: [70, 92],
         evaporationMultiplier: [0.72, 0.32],
-        nextSeason: 'First winter',
+        nextSeason: 'The first winter',
       },
       {
         id: 'winter',
-        label: 'First winter',
+        label: 'The first winter',
         startsAt: winterAtSeconds,
+        endsAt: winter1End,
+        temperatureOffsetC: [-4.4, -3.1],
+        daylightHours: [9.4, 10.2],
+        snowfallPotential: [1, 0.74],
+        seaIcePotential: [1, 0.88],
+        snowLineM: [1.5, 2.6],
+        relativeHumidityPercent: [78, 82],
+        evaporationMultiplier: [0.42, 0.5],
+        nextSeason: 'First thaw',
+      },
+      {
+        id: 'spring',
+        label: 'First thaw',
+        startsAt: spring1Start,
+        endsAt: spring1End,
+        temperatureOffsetC: [-3.1, 0.4],
+        daylightHours: [10.2, 12.6],
+        snowfallPotential: [0.42, 0.06],
+        seaIcePotential: [0.88, 0.08],
+        snowLineM: [2.6, 9.5],
+        relativeHumidityPercent: [86, 68],
+        evaporationMultiplier: [0.62, 1.08],
+        nextSeason: 'Long sun',
+      },
+      {
+        id: 'summer',
+        label: 'Long sun',
+        startsAt: summerStart,
+        endsAt: summerEnd,
+        temperatureOffsetC: [0.4, 0.9],
+        daylightHours: [12.6, 14.6],
+        snowfallPotential: [0.02, 0],
+        seaIcePotential: [0.04, 0],
+        snowLineM: [13, 15],
+        relativeHumidityPercent: [58, 46],
+        evaporationMultiplier: [1.16, 1.28],
+        nextSeason: 'Second autumn',
+      },
+      {
+        id: 'autumn',
+        label: 'Second autumn',
+        startsAt: autumn2Start,
+        endsAt: autumn2End,
+        temperatureOffsetC: [0.9, -1.8],
+        daylightHours: [14.6, 11.4],
+        snowfallPotential: [0, 0.24],
+        seaIcePotential: [0, 0.1],
+        snowLineM: [14, 7.4],
+        relativeHumidityPercent: [46, 68],
+        evaporationMultiplier: [1.26, 0.76],
+        nextSeason: 'The second winter',
+      },
+      {
+        id: 'winter',
+        label: 'The second winter',
+        startsAt: winter2Start,
+        endsAt: winter2End,
+        temperatureOffsetC: [-1.8, -4.8],
+        daylightHours: [11.4, 9.2],
+        snowfallPotential: [0.34, 1],
+        seaIcePotential: [0.2, 1],
+        snowLineM: [6.5, 1.4],
+        relativeHumidityPercent: [70, 80],
+        evaporationMultiplier: [0.7, 0.4],
+        nextSeason: 'The second spring',
+      },
+      {
+        id: 'spring',
+        label: 'The second spring',
+        startsAt: winter2End,
         endsAt: Number.POSITIVE_INFINITY,
-        temperatureOffsetC: [-4.4, -4.4],
-        daylightHours: [9.4, 9.4],
-        snowfallPotential: [1, 1],
-        seaIcePotential: [1, 1],
-        snowLineM: [1.5, 1.5],
-        relativeHumidityPercent: [78, 78],
-        evaporationMultiplier: [0.42, 0.42],
+        temperatureOffsetC: [-4.8, 1.2],
+        daylightHours: [9.2, 13.4],
+        snowfallPotential: [0.6, 0.02],
+        seaIcePotential: [0.7, 0],
+        snowLineM: [3.4, 12],
+        relativeHumidityPercent: [84, 60],
+        evaporationMultiplier: [0.66, 1.2],
         nextSeason: null,
       },
-    ];
+    );
+  }
+
+  get secondSpringAtSeconds(): number {
+    return this.firstWinterAt + SeasonSystem.SEASON_LENGTH_DAYS * this.dayLengthSeconds * 4;
   }
 
   sample(elapsedSeconds: number): SeasonState {
@@ -114,8 +203,8 @@ export class SeasonSystem {
       id: phase.id,
       label: phase.label,
       progress,
-      daysUntilWinter: Math.max(0, (this.winterAtSeconds - elapsed) / this.dayLengthSeconds),
-      winterAtSeconds: this.winterAtSeconds,
+      daysUntilWinter: this.daysUntilNextWinter(elapsed),
+      winterAtSeconds: this.nextWinterAt(elapsed),
       temperatureOffsetC: this.lerp(phase.temperatureOffsetC[0], phase.temperatureOffsetC[1], progress),
       daylightHours: this.lerp(phase.daylightHours[0], phase.daylightHours[1], progress),
       snowfallPotential: this.lerp(phase.snowfallPotential[0], phase.snowfallPotential[1], progress),
@@ -125,6 +214,18 @@ export class SeasonSystem {
       evaporationMultiplier: this.lerp(phase.evaporationMultiplier[0], phase.evaporationMultiplier[1], progress),
       nextSeason: phase.nextSeason,
     };
+  }
+
+  private nextWinterAt(elapsed: number): number {
+    if (elapsed < this.phases[3].startsAt) return this.phases[3].startsAt;
+    if (elapsed < this.phases[7].startsAt) return this.phases[7].startsAt;
+    return Number.POSITIVE_INFINITY;
+  }
+
+  private daysUntilNextWinter(elapsed: number): number {
+    const next = this.nextWinterAt(elapsed);
+    if (!Number.isFinite(next)) return 0;
+    return Math.max(0, (next - elapsed) / this.dayLengthSeconds);
   }
 
   private lerp(a: number, b: number, t: number): number {

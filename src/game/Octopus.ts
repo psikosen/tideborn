@@ -28,6 +28,36 @@ export interface OctopusEvents {
 const ARM_COUNT = 8;
 const ARM_POINTS = 12;
 
+export const PLAYER_STAMINA_REGEN = {
+  underwaterActive: 13,
+  underwaterRest: 17,
+  landActive: 9,
+  landRest: 12,
+  braced: 18,
+  gripRest: 9,
+  treeClimbDrain: 6.5,
+  wallClimbDrain: 8,
+} as const;
+
+export const JET_BURST_TUNING = {
+  impulseX: 8.2,
+  impulseY: 8.4,
+  delayedAimImpulseX: 5.5,
+  delayedAimImpulseY: 8,
+  coastSeconds: 0.42,
+  underwaterCoastMaxSpeed: 5.2,
+  underwaterCoastDamping: 0.32,
+  landStrength: 0.5,
+} as const;
+
+export const JET_BLAST_PROPULSION = {
+  minimumForwardSpeed: 10.2,
+  sustainedAcceleration: 19,
+  driveSecondsUnderwater: 0.62,
+  underwaterMaxSpeed: 11.2,
+  gripLockoutSeconds: 0.72,
+} as const;
+
 const armVertex = /* glsl */ `
   attribute float aTone;
   varying vec2 vUv;
@@ -99,6 +129,7 @@ export class Octopus {
   camouflageSurface = 'open water';
   squeezing = false;
   stamina = 100;
+  staminaRecoveryRate = 0;
   jetCooldown = 0;
   jetCharges = 3;
   jetRechargeRemaining = 0;
@@ -122,9 +153,16 @@ export class Octopus {
   private jetSteerTime = 0;
   private jetSteerApplied = true;
   private jetEnvironmentScale = 1;
+  private jetBlastDriveTime = 0;
+  private jetBlastDriveDirection = new THREE.Vector2(1, 0);
+  private jetBlastGripLockout = 0;
   private armTrailLocal = new THREE.Vector2(0, -1);
   private armTrailStrength = 0;
   private armTrailSpeed = 0;
+  private toolUseTime = 0;
+  private toolUseDuration = 0.55;
+  private toolUseDirection = new THREE.Vector2(1, 0);
+  private toolUseAction: 'dig' | 'pry' | 'cut' | 'place' | 'reinforce' | 'craft' | null = null;
   private sweptContact = new SweptContact2D();
 
   constructor() {
@@ -256,6 +294,11 @@ export class Octopus {
     this.techniqueTimer = Math.max(0, this.techniqueTimer - dt);
     this.digRepeatTimer = Math.max(0, this.digRepeatTimer - dt);
     this.jetSteerTime = Math.max(0, this.jetSteerTime - dt);
+    this.jetBlastDriveTime = Math.max(0, this.jetBlastDriveTime - dt);
+    this.jetBlastGripLockout = Math.max(0, this.jetBlastGripLockout - dt);
+    this.toolUseTime = Math.max(0, this.toolUseTime - dt);
+    this.staminaRecoveryRate = 0;
+    if (this.toolUseTime === 0) this.toolUseAction = null;
     if (this.techniqueTimer === 0 && !this.braced) this.technique = this.underwater ? 'swim' : 'crawl';
 
     if (input.pressed.has('KeyB')) {
@@ -271,7 +314,7 @@ export class Octopus {
     const digHeld = input.held.has('KeyX') || input.held.has('MouseLeft');
     if (input.pressed.has('KeyX') || input.pressed.has('MouseLeft') || (digHeld && this.digRepeatTimer <= 0)) {
       events.dig = true;
-      this.digRepeatTimer = 0.29;
+      this.digRepeatTimer = 0.2;
     }
     if (!digHeld) this.digRepeatTimer = 0;
     if (input.pressed.has('KeyQ')) {
@@ -301,10 +344,10 @@ export class Octopus {
 
     const wasGripping = this.gripping;
     const underlying = this.surfaceAdaptation.sampleUnderlying(world, this.x, this.y);
-    const gripCandidate = input.held.has('KeyG')
+    const gripCandidate = input.held.has('KeyG') && this.jetBlastGripLockout <= 0
       ? externalGripContact ?? this.surfaceAdaptation.sampleGrippable(world, this.x, this.y)
       : null;
-    this.gripping = input.held.has('KeyG') && gripCandidate !== null;
+    this.gripping = input.held.has('KeyG') && this.jetBlastGripLockout <= 0 && gripCandidate !== null;
     this.surfaceContact = gripCandidate ?? underlying;
     if (this.gripping && !wasGripping) {
       this.braced = false;
@@ -336,38 +379,62 @@ export class Octopus {
         if (tangentY < 0) { tangentX *= -1; tangentY *= -1; }
         this.vx = tangentX * axisY * 1.68;
         this.vy = tangentY * axisY * 1.68;
-        this.stamina = clamp(this.stamina - dt * 6.5, 0, 100);
+        this.staminaRecoveryRate = -PLAYER_STAMINA_REGEN.treeClimbDrain;
+        this.stamina = clamp(this.stamina + dt * this.staminaRecoveryRate, 0, 100);
         this.technique = 'sucker tree climb';
       } else {
         this.vx = 0;
         this.vy = 0;
-        this.stamina = clamp(this.stamina + dt * 5, 0, 100);
+        this.staminaRecoveryRate = PLAYER_STAMINA_REGEN.gripRest;
+        this.stamina = clamp(this.stamina + dt * this.staminaRecoveryRate, 0, 100);
         this.technique = treeGrip ? 'tree grip' : 'surface grip';
       }
       this.techniqueTimer = 0.12;
     } else if (this.braced) {
       this.vx *= Math.pow(0.03, dt);
       this.vy *= Math.pow(0.03, dt);
-      this.stamina = clamp(this.stamina + dt * 12, 0, 100);
+      this.staminaRecoveryRate = PLAYER_STAMINA_REGEN.braced;
+      this.stamina = clamp(this.stamina + dt * this.staminaRecoveryRate, 0, 100);
     } else if (this.underwater) {
       const accel = this.squeezing ? 5.8 : 8.8;
       this.vx += axisX * accel * dt;
       this.vy += axisY * accel * dt;
       this.vy += 0.5 * dt;
-      const damping = Math.pow(0.16, dt);
+      // Jet Blast is a short sustained mantle discharge, not a single frame
+      // impulse that normal underwater drag immediately erases.
+      const jetBlastDriving = this.jetBlastDriveTime > 0;
+      const jetBurstCoasting = this.jetSteerTime > 0 && !jetBlastDriving;
+      if (jetBlastDriving) {
+        this.vx += this.jetBlastDriveDirection.x * JET_BLAST_PROPULSION.sustainedAcceleration * dt;
+        this.vy += this.jetBlastDriveDirection.y * JET_BLAST_PROPULSION.sustainedAcceleration * dt;
+      }
+      const damping = Math.pow(
+        jetBlastDriving ? 0.48 : jetBurstCoasting ? JET_BURST_TUNING.underwaterCoastDamping : 0.16,
+        dt,
+      );
       this.vx *= damping;
       this.vy *= damping;
       // A breach jet must retain its impulse for several physics frames. If
       // ordinary swim clamping immediately reduced it to 3.1 m/s, the mantle
       // could touch the surface but never launch fully into the air.
-      const jetBlastSwimming = this.technique === 'jet blast';
-      const maxSpeed = this.technique === 'breach jet' ? 9.4 : jetBlastSwimming ? 7.4 : this.squeezing ? 2.2 : 3.1;
+      const maxSpeed = this.technique === 'breach jet'
+        ? 9.4
+        : jetBlastDriving
+          ? JET_BLAST_PROPULSION.underwaterMaxSpeed
+          : jetBurstCoasting
+            ? JET_BURST_TUNING.underwaterCoastMaxSpeed
+            : this.squeezing
+              ? 2.2
+              : 3.1;
       const speed = Math.hypot(this.vx, this.vy);
       if (speed > maxSpeed) {
         this.vx = (this.vx / speed) * maxSpeed;
         this.vy = (this.vy / speed) * maxSpeed;
       }
-      this.stamina = clamp(this.stamina + dt * 10, 0, 100);
+      this.staminaRecoveryRate = axisX !== 0 || axisY !== 0
+        ? PLAYER_STAMINA_REGEN.underwaterActive
+        : PLAYER_STAMINA_REGEN.underwaterRest;
+      this.stamina = clamp(this.stamina + dt * this.staminaRecoveryRate, 0, 100);
     } else {
       this.vx += axisX * 12.5 * dt;
       this.vx *= Math.pow(0.085, dt);
@@ -382,10 +449,14 @@ export class Octopus {
       const touchingWall = world.isSolid(this.x + this.facing * (this.radius + 0.1), this.y);
       if (touchingWall && up && this.stamina > 0) {
         this.vy = 2.25;
-        this.stamina = clamp(this.stamina - dt * 8, 0, 100);
+        this.staminaRecoveryRate = -PLAYER_STAMINA_REGEN.wallClimbDrain;
+        this.stamina = clamp(this.stamina + dt * this.staminaRecoveryRate, 0, 100);
         this.technique = 'sucker climb';
       } else {
-        this.stamina = clamp(this.stamina + dt * 7, 0, 100);
+        this.staminaRecoveryRate = axisX !== 0
+          ? PLAYER_STAMINA_REGEN.landActive
+          : PLAYER_STAMINA_REGEN.landRest;
+        this.stamina = clamp(this.stamina + dt * this.staminaRecoveryRate, 0, 100);
       }
     }
 
@@ -396,17 +467,17 @@ export class Octopus {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len;
       dy /= len;
-      this.jetEnvironmentScale = this.underwater ? 1 : 0.5;
+      this.jetEnvironmentScale = this.underwater ? 1 : JET_BURST_TUNING.landStrength;
       const jetScale = this.jetEnvironmentScale;
-      this.vx += dx * 7.1 * jetScale;
-      this.vy += dy * 7.3 * jetScale + (this.underwater && dy > 0 && this.y > seaLevel - 1.45 ? 5.2 : 0);
+      this.vx += dx * JET_BURST_TUNING.impulseX * jetScale;
+      this.vy += dy * JET_BURST_TUNING.impulseY * jetScale + (this.underwater && dy > 0 && this.y > seaLevel - 1.45 ? 5.2 : 0);
       this.lastJetDirection.set(dx, dy);
       this.lastJetStrength = jetScale;
       this.stamina -= 13;
       this.jetCharges -= 1;
       this.jetRechargeRemaining = 1.15;
       this.jetCooldown = 0.18;
-      this.jetSteerTime = 0.32;
+      this.jetSteerTime = JET_BURST_TUNING.coastSeconds;
       this.jetSteerApplied = aimed;
       this.technique = this.underwater ? (dy > 0 && this.y > seaLevel - 1.45 ? 'breach jet' : 'jet burst') : 'land jet';
       this.techniqueTimer = 0.35;
@@ -421,8 +492,8 @@ export class Octopus {
       const len = Math.hypot(dx, dy) || 1;
       dx /= len;
       dy /= len;
-      this.vx += dx * 4.8 * this.jetEnvironmentScale;
-      this.vy += dy * 7.1 * this.jetEnvironmentScale + (this.underwater && dy > 0 && this.y > seaLevel - 1.65 ? 5.4 : 0);
+      this.vx += dx * JET_BURST_TUNING.delayedAimImpulseX * this.jetEnvironmentScale;
+      this.vy += dy * JET_BURST_TUNING.delayedAimImpulseY * this.jetEnvironmentScale + (this.underwater && dy > 0 && this.y > seaLevel - 1.65 ? 5.4 : 0);
       this.lastJetDirection.set(dx, dy);
       this.facing = Math.sign(dx) || this.facing;
       this.jetSteerApplied = true;
@@ -573,10 +644,18 @@ export class Octopus {
     this.armMaterial.uniforms.uTime.value = time;
     this.armMaterial.uniforms.uCamo.value = this.camouflage ? 1 : 0;
     this.armMaterial.uniforms.uInk.value = this.inkTime > 0 ? 1 : 0;
-    this.armMaterial.uniforms.uAction.value = this.braced || this.gripping || this.technique === 'twist' || this.technique.includes('jet') ? 1 : 0;
+    this.armMaterial.uniforms.uAction.value = this.braced || this.gripping || this.technique === 'twist' || this.technique.includes('jet') || this.toolUseTime > 0 ? 1 : 0;
     this.armMaterial.uniforms.uWet.value = this.y < seaLevel ? 1 : 0.15;
     (this.armMaterial.uniforms.uCamoColor.value as THREE.Color).copy(this.camouflageColor);
     (this.armMaterial.uniforms.uCamoAccent.value as THREE.Color).copy(this.camouflageAccent);
+
+    const inverseRotation = -this.group.rotation.z;
+    const inverseCosine = Math.cos(inverseRotation);
+    const inverseSine = Math.sin(inverseRotation);
+    const localToolX = this.toolUseDirection.x * inverseCosine - this.toolUseDirection.y * inverseSine;
+    const localToolY = this.toolUseDirection.x * inverseSine + this.toolUseDirection.y * inverseCosine;
+    const toolProgress = this.toolUseTime > 0 ? 1 - this.toolUseTime / this.toolUseDuration : 0;
+    const toolStrike = Math.sin(Math.min(1, toolProgress / 0.72) * Math.PI * 0.5);
 
     for (let arm = 0; arm < ARM_COUNT; arm += 1) {
       const attr = this.armMeshes[arm].geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -625,6 +704,24 @@ export class Octopus {
           px = rootX + Math.cos(twist) * t * 0.46;
           py = rootY + Math.sin(twist) * t * 0.46;
         }
+        if (this.toolUseTime > 0 && this.technique !== 'twist') {
+          const workingArm = arm < 5;
+          const fan = (arm - 2) * (workingArm ? 0.075 : 0.11);
+          const reach = workingArm ? 0.59 + toolStrike * 0.17 : 0.43;
+          let actionSwing = 0;
+          if (this.toolUseAction === 'dig' || this.toolUseAction === 'cut') actionSwing = (1 - toolStrike) * 0.38 - toolStrike * 0.13;
+          else if (this.toolUseAction === 'pry') actionSwing = Math.sin(toolProgress * Math.PI * 3) * 0.16;
+          else if (this.toolUseAction === 'craft') actionSwing = Math.sin(toolProgress * Math.PI * 4 + arm) * 0.19;
+          const cosine = Math.cos(actionSwing);
+          const sine = Math.sin(actionSwing);
+          const actionX = localToolX * cosine - localToolY * sine;
+          const actionY = localToolX * sine + localToolY * cosine;
+          const targetX = rootX + (actionX * reach - actionY * fan) * t;
+          const targetY = rootY + (actionY * reach + actionX * fan) * t;
+          const blend = workingArm ? 0.92 : 0.55;
+          px += (targetX - px) * blend;
+          py += (targetY - py) * blend;
+        }
         centers.push({ x: px, y: py });
       }
       for (let p = 0; p < ARM_POINTS; p += 1) {
@@ -647,7 +744,7 @@ export class Octopus {
       const contact = this.suckerContacts[arm];
       contact.position.x = tip.x;
       contact.position.y = tip.y;
-      contact.visible = this.braced || this.gripping || this.technique === 'twist';
+      contact.visible = this.braced || this.gripping || this.technique === 'twist' || this.toolUseTime > 0;
       const contactMaterial = contact.material as THREE.MeshBasicMaterial;
       contactMaterial.opacity = contact.visible ? 0.45 + Math.sin(time * 8 + arm) * 0.22 : 0;
       const contactScale = 0.72 + Math.sin(time * 7 + arm * 0.9) * 0.16;
@@ -699,12 +796,41 @@ export class Octopus {
     return this.sweptContact.snapshot();
   }
 
+  get jetBlastDriveSnapshot(): { active: boolean; remainingSeconds: number; direction: { x: number; y: number } } {
+    return {
+      active: this.jetBlastDriveTime > 0,
+      remainingSeconds: Number(this.jetBlastDriveTime.toFixed(3)),
+      direction: {
+        x: Number(this.jetBlastDriveDirection.x.toFixed(3)),
+        y: Number(this.jetBlastDriveDirection.y.toFixed(3)),
+      },
+    };
+  }
+
   canBrace(world: MatterWorld): boolean {
     for (let i = 0; i < 12; i += 1) {
       const a = (i / 12) * Math.PI * 2;
       if (world.isSolid(this.x + Math.cos(a) * 0.72, this.y + Math.sin(a) * 0.58)) return true;
     }
     return false;
+  }
+
+  performToolUse(action: 'dig' | 'pry' | 'cut' | 'place' | 'reinforce' | 'craft', direction: THREE.Vector2, label: string): void {
+    this.toolUseAction = action;
+    this.toolUseDuration = action === 'craft' ? 0.95 : action === 'place' || action === 'reinforce' ? 0.78 : 0.55;
+    this.toolUseTime = this.toolUseDuration;
+    this.toolUseDirection.copy(direction.lengthSq() > 0.001 ? direction : new THREE.Vector2(this.facing, 0)).normalize();
+    this.technique = `${action} · ${label}`;
+    this.techniqueTimer = Math.max(this.techniqueTimer, this.toolUseDuration);
+  }
+
+  get toolUseSnapshot(): { active: boolean; action: string | null; progress: number; direction: { x: number; y: number } } {
+    return {
+      active: this.toolUseTime > 0,
+      action: this.toolUseAction,
+      progress: Number((this.toolUseTime > 0 ? 1 - this.toolUseTime / this.toolUseDuration : 0).toFixed(2)),
+      direction: { x: Number(this.toolUseDirection.x.toFixed(2)), y: Number(this.toolUseDirection.y.toFixed(2)) },
+    };
   }
 
   isInDen(): boolean {
@@ -719,12 +845,20 @@ export class Octopus {
     this.jetCooldown = 0.85;
     this.lastJetDirection.copy(normalized);
     this.lastJetStrength = 3.5;
-    // Jet Blast is a whole-mantle surge as well as a pressure weapon. Drive
-    // the body along the aimed stream so it can breach, escape or follow the
-    // tunnel it just opened; the higher temporary swim cap preserves the
-    // impulse instead of erasing it on the next physics step.
-    this.vx += normalized.x * 6.15;
-    this.vy += normalized.y * 6.15;
+    // A whole-mantle discharge tears every sucker free. Otherwise a held G
+    // input or Brace state zeroes the velocity on the very next frame and the
+    // blast appears to move everything except Octi.
+    this.braced = false;
+    this.gripping = false;
+    this.jetBlastGripLockout = JET_BLAST_PROPULSION.gripLockoutSeconds;
+    // Guarantee a strong forward component even when the octopus was moving
+    // against the cast direction. Perpendicular current momentum is retained.
+    const currentForwardSpeed = this.vx * normalized.x + this.vy * normalized.y;
+    const forwardBoost = Math.max(0, JET_BLAST_PROPULSION.minimumForwardSpeed - currentForwardSpeed);
+    this.vx += normalized.x * forwardBoost;
+    this.vy += normalized.y * forwardBoost;
+    this.jetBlastDriveDirection.copy(normalized);
+    this.jetBlastDriveTime = this.underwater ? JET_BLAST_PROPULSION.driveSecondsUnderwater : 0.2;
     this.jetSteerTime = 0.34;
     this.jetSteerApplied = true;
     this.facing = Math.sign(normalized.x) || this.facing;

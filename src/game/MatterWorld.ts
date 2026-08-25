@@ -176,6 +176,11 @@ export class MatterWorld {
   private textureUploads = 0;
   private textureSyncedCells = 0;
   private textureIdleFrames = 0;
+  private pristineMaterial!: Uint8Array;
+  private pristineMoisture!: Uint8Array;
+  private pristineTemperature!: Int16Array;
+  private pristineFlags!: Uint8Array;
+  private pristineFracture!: Uint16Array;
 
   constructor() {
     this.generate();
@@ -206,6 +211,11 @@ export class MatterWorld {
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_WIDTH, WORLD_HEIGHT), this.shader);
     this.mesh.position.set(0, WORLD_MIN_Y + WORLD_HEIGHT * 0.5, 0);
     this.mesh.renderOrder = 3;
+    this.pristineMaterial = this.material.slice();
+    this.pristineMoisture = this.moisture.slice();
+    this.pristineTemperature = this.temperature.slice();
+    this.pristineFlags = this.flags.slice();
+    this.pristineFracture = this.fracture.slice();
   }
 
   private idx(x: number, y: number): number {
@@ -332,6 +342,38 @@ export class MatterWorld {
     }
     const c = this.worldToCell(wrapWorldX(wx), wy);
     return this.material[this.idx(c.x, c.y)] as MaterialId;
+  }
+
+  serializeModifiedCells(): { version: 1; cells: number[] } | null {
+    const cells: number[] = [];
+    for (let i = 0; i < this.material.length; i += 1) {
+      if (this.material[i] === this.pristineMaterial[i]
+        && this.moisture[i] === this.pristineMoisture[i]
+        && this.temperature[i] === this.pristineTemperature[i]
+        && this.flags[i] === this.pristineFlags[i]
+        && this.fracture[i] === this.pristineFracture[i]) continue;
+      cells.push(i, this.material[i], this.moisture[i], this.temperature[i], this.flags[i], this.fracture[i]);
+    }
+    return cells.length > 0 ? { version: 1, cells } : null;
+  }
+
+  importModifiedCells(data: unknown): void {
+    if (typeof data !== 'object' || data === null) return;
+    const payload = data as { version?: unknown; cells?: unknown };
+    if (payload.version !== 1 || !Array.isArray(payload.cells)) return;
+    const cells = payload.cells;
+    let restored = 0;
+    for (let offset = 0; offset + 5 < cells.length; offset += 6) {
+      const index = cells[offset];
+      if (!Number.isInteger(index) || index < 0 || index >= this.material.length) continue;
+      this.material[index] = cells[offset + 1] ?? this.pristineMaterial[index];
+      this.moisture[index] = cells[offset + 2] ?? this.pristineMoisture[index];
+      this.temperature[index] = cells[offset + 3] ?? this.pristineTemperature[index];
+      this.flags[index] = cells[offset + 4] ?? this.pristineFlags[index];
+      this.fracture[index] = cells[offset + 5] ?? this.pristineFracture[index];
+      restored += 1;
+    }
+    if (restored > 0) this.textureDirty = true;
   }
 
   getCellMaterial(x: number, y: number): MaterialId {
