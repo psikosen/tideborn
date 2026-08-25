@@ -107,11 +107,76 @@ if (Math.abs(restored.elapsedAfterRestore - beforeElapsed) > 0.5) {
   throw new Error(`save/load mismatch: saved ${beforeElapsed}, restored ${restored.elapsedAfterRestore}`);
 }
 
+// Back into the water: post-reload the game sits on the title screen.
+await page.keyboard.press('Enter');
+await page.waitForTimeout(400);
+
 // Autosave round-trip via the default slot.
 const autosaveOk = await page.evaluate(() => {
   window.advanceTime(1000);
   return window.tidebornSave.autosave();
 });
+
+// Music: a track must be selected and, where the environment allows output,
+// actively playing. Headless SwiftShader has no audio device, so we accept
+// currentTrack set with zero failures; real browsers hit playing === true.
+await page.waitForFunction(() => {
+  const music = JSON.parse(window.render_game_to_text()).audio?.music;
+  return Boolean(music) && music.currentTrack !== 'none' && music.failedTracks.length === 0;
+}, null, { timeout: 15000 });
+const musicState = await page.evaluate(() => JSON.parse(window.render_game_to_text()).audio.music);
+
+// Den-to-den travel: claim a second chamber, return home, ride the network.
+await page.evaluate(() => window.tidebornDev.teleport(11.8, -6.35));
+await page.evaluate(() => window.advanceTime(300));
+await page.keyboard.press('KeyN');
+await page.evaluate(() => window.advanceTime(150));
+const claimed = await page.evaluate(() => JSON.parse(window.render_game_to_text()));
+if (!claimed.den.sites.some((site) => site.id !== 'starter-den' && !site.destroyed)) {
+  throw new Error(`Second den claim failed (sites: ${claimed.den.sites.map((site) => site.id).join(',')})`);
+}
+// Post-reload the DOM is fresh; no overlays can intercept keys here.
+await page.evaluate(() => {
+  window.tidebornDev.teleport(-13.25, 2.9);
+  window.advanceTime(400);
+});
+const insideHomeDen = await page.evaluate(() => JSON.parse(window.render_game_to_text()).den.active);
+if (!insideHomeDen) throw new Error('Teleport did not land inside the starter den.');
+await page.evaluate(() => window.tidebornDev.grant('food', 10));
+await page.keyboard.down('KeyT');
+await page.evaluate(() => window.advanceTime(80));
+await page.keyboard.up('KeyT');
+await page.waitForTimeout(150);
+const travelPanelOpen = await page.evaluate(() => {
+  const panel = document.querySelector('[data-ui="travel"]');
+  return Boolean(panel && panel.style.display === 'flex' && panel.querySelectorAll('button').length >= 3);
+});
+let traveled = false;
+if (travelPanelOpen) {
+  await page.waitForTimeout(250);
+  await page.evaluate(() => {
+    const row = document.querySelector('[data-ui="travel"] [data-travel-list] button');
+    if (row) row.click();
+  });
+  await page.evaluate(() => window.advanceTime(600));
+  const after = await page.evaluate(() => JSON.parse(window.render_game_to_text()));
+  traveled = after.player.x > -5;
+}
+
+// Expedition record opens from the pause chip and lists four slots.
+await page.evaluate(() => document.querySelector('[data-ui="pause"]').click());
+await page.waitForTimeout(150);
+const recordSlots = await page.evaluate(() => document.querySelectorAll('[data-record-list] > div').length);
+await page.evaluate(() => { const p = document.querySelector('[data-ui="record"]'); if (p) p.style.display = 'none'; });
+if (await page.evaluate(() => JSON.parse(window.render_game_to_text()).mode) === 'paused') {
+  await page.keyboard.press('Escape');
+}
+
+// Second-spring victory path via dev hook.
+await page.evaluate(() => window.tidebornDev.jumpToSecondSpring());
+await page.evaluate(() => window.advanceTime(2600));
+const victoryText = await page.evaluate(() => document.querySelector('[data-results-outcome]')?.textContent ?? '');
+if (!victoryText.includes('TWO WINTERS')) throw new Error(`Victory not reached, outcome text was: ${victoryText}`);
 
 await page.screenshot({ path: '../output/feature-smoke/final.png' });
 console.log(JSON.stringify({
@@ -122,6 +187,12 @@ console.log(JSON.stringify({
   namingInput,
   relationsWidget,
   codexVisible,
+  musicTrack: musicState.currentTrack,
+  musicPlayingHeadless: musicState.playing,
+  travelPanelOpen,
+  traveled,
+  recordSlots,
+  victoryText,
   savedElapsed: beforeElapsed,
   restoredElapsed: restored.elapsedAfterRestore,
   schemaVersion: restored.peekVersion,

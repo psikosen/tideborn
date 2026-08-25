@@ -187,7 +187,7 @@ export class DeepAssetFaunaSystem {
       }
       const dx = creature.x - player.x;
       const dy = creature.y - player.y;
-      const visible = Math.abs(dx) <= 16.5 && Math.abs(dy) <= 10.5;
+      const visible = Math.abs(dx) <= 15.5 && Math.abs(dy) <= 9.5;
       creature.visual.visible = visible;
       if (visible) {
         this.visibleCreatures += 1;

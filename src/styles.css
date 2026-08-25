@@ -514,6 +514,21 @@ button { font: inherit; }
   box-shadow: 0 9px 24px rgba(226,116,88,.22);
 }
 .start-button:hover { filter: brightness(1.08); transform: translateY(-1px); }
+
+.menu-secondary-button {
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid rgba(125,238,216,.42);
+  border-radius: 8px;
+  padding: 12px 15px;
+  background: rgba(8,34,38,.72);
+  color: #bfeee0;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: .05em;
+}
+.menu-secondary-button:hover:not(:disabled) { background: rgba(15,64,58,.85); color: #e8fbf2; }
+.menu-secondary-button:disabled { cursor: default; }
 .seed { margin-left: 12px; color: rgba(224,243,233,.4); font: 9px ui-monospace, 'SFMono-Regular', Consolas, monospace; }
 .menu-controls { padding: 41px 32px; background: rgba(152,208,181,.04); border-left: 1px solid rgba(255,255,255,.07); }
 .menu-controls h2 { margin: 0 0 18px; font-size: 11px; letter-spacing: .13em; text-transform: uppercase; }

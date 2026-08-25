@@ -140,7 +140,7 @@ export class ContestSessionSystem {
   }
 
   finishCampaign(input: ContestSessionInput): ContestResult {
-    if (this.completedResult) return this.completedResult;
+    if (this.completedResult?.reason === 'second-spring') return this.completedResult;
     const assessment = this.assess(input);
     const densFound = assessment.winPaths.network.currentDens;
     const bestDen = assessment.winPaths.solo.bestDen;
@@ -168,7 +168,7 @@ export class ContestSessionSystem {
   }
 
   finishDeath(input: ContestSessionInput): ContestResult {
-    if (this.completedResult) return this.completedResult;
+    if (this.completedResult?.reason === 'death') return this.completedResult;
     const assessment = this.assess(input);
     const densFound = assessment.winPaths.network.currentDens;
     this.completedResult = {

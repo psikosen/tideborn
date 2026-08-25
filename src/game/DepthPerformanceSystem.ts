@@ -1,4 +1,4 @@
-export type DepthRenderTier = 'surface' | 'aphotic' | 'midnight' | 'abyssal';
+export type DepthRenderTier = 'surface' | 'shallow' | 'aphotic' | 'midnight' | 'abyssal';
 
 interface OcclusionUpdateRequest {
   elapsed: number;
@@ -9,11 +9,14 @@ interface OcclusionUpdateRequest {
 
 const TIER_SETTINGS: Record<DepthRenderTier, { pixelRatioCap: number; occlusionHz: number; litOcclusionHz: number }> = {
   surface: { pixelRatioCap: 1.5, occlusionHz: 12, litOcclusionHz: 18 },
+  // The intermediate shallow step halves the render-target size jump at the
+  // first descent boundary, so the reallocation hitch is far shorter.
+  shallow: { pixelRatioCap: 1.25, occlusionHz: 10, litOcclusionHz: 16 },
   // One stable deep-water resolution prevents expensive post-processing
   // render-target reallocations at every canonical depth boundary.
-  aphotic: { pixelRatioCap: 1, occlusionHz: 10, litOcclusionHz: 16 },
-  midnight: { pixelRatioCap: 1, occlusionHz: 9, litOcclusionHz: 15 },
-  abyssal: { pixelRatioCap: 1, occlusionHz: 8, litOcclusionHz: 14 },
+  aphotic: { pixelRatioCap: 1, occlusionHz: 9, litOcclusionHz: 14 },
+  midnight: { pixelRatioCap: 1, occlusionHz: 7, litOcclusionHz: 11 },
+  abyssal: { pixelRatioCap: 1, occlusionHz: 5, litOcclusionHz: 9 },
 };
 
 /**
@@ -31,6 +34,7 @@ export class DepthPerformanceSystem {
   private lastSourceKey = '';
   private occlusionUpdates = 0;
   private occlusionReuses = 0;
+  private occlusionGraceUntil = -Infinity;
 
   updateDepth(canonicalDepthM: number): boolean {
     const previous = this.tier;
@@ -39,18 +43,24 @@ export class DepthPerformanceSystem {
     // Hysteresis keeps the drawing buffer from being recreated when the
     // player hovers on a depth-band boundary.
     if (this.tier === 'surface') {
-      if (canonicalDepthM > 1700) this.tier = 'aphotic';
+      if (canonicalDepthM > 900) this.tier = 'shallow';
+    } else if (this.tier === 'shallow') {
+      if (canonicalDepthM < 550) this.tier = 'surface';
+      else if (canonicalDepthM > 1700) this.tier = 'aphotic';
     } else if (this.tier === 'aphotic') {
-      if (canonicalDepthM < 1250) this.tier = 'surface';
+      if (canonicalDepthM < 1250) this.tier = 'shallow';
       else if (canonicalDepthM > 7600) this.tier = 'midnight';
-    } else if (this.tier === 'midnight') {
-      if (canonicalDepthM < 6500) this.tier = 'aphotic';
-      else if (canonicalDepthM > 18500) this.tier = 'abyssal';
     } else if (canonicalDepthM < 16500) {
       this.tier = 'midnight';
     }
 
-    return previousPixelRatioCap !== TIER_SETTINGS[this.tier].pixelRatioCap;
+    const ratioChanged = previousPixelRatioCap !== TIER_SETTINGS[this.tier].pixelRatioCap;
+    if (ratioChanged) {
+      // Let the frame that reallocates render targets settle before the next
+      // 160-ray occlusion burst stacks onto the same hitch.
+      this.occlusionGraceUntil = this.lastOcclusionUpdate + 0.3;
+    }
+    return ratioChanged;
   }
 
   get pixelRatioCap(): number {
@@ -63,10 +73,14 @@ export class DepthPerformanceSystem {
     const terrainChanged = request.worldRevision !== this.lastWorldRevision;
     const clockReset = request.elapsed < this.lastOcclusionUpdate;
     const due = request.elapsed + 1e-6 >= this.nextOcclusionUpdate;
+    const inGrace = request.elapsed < this.occlusionGraceUntil;
 
-    if (!sourceChanged && !terrainChanged && !clockReset && !due) {
+    if ((!sourceChanged && !terrainChanged && !clockReset && !due) || (inGrace && !terrainChanged)) {
       this.occlusionReuses += 1;
       return false;
+    }
+    if (inGrace && this.occlusionGraceUntil > this.nextOcclusionUpdate) {
+      this.nextOcclusionUpdate = this.occlusionGraceUntil;
     }
 
     const hz = request.hasBiolight ? settings.litOcclusionHz : settings.occlusionHz;

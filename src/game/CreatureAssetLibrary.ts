@@ -45,6 +45,7 @@ export interface CreatureAssetSnapshot {
   animatedInstances: number;
   staticMeshesBeforeMerge: number;
   staticMeshesAfterMerge: number;
+  warmup: { queued: number; completed: number; active: boolean };
 }
 
 // The normal/local game uses the user's detailed creature GLBs. The contest
@@ -193,9 +194,42 @@ export class CreatureAssetLibrary {
   private instances = 0;
   private staticMeshesBeforeMerge = 0;
   private staticMeshesAfterMerge = 0;
+  private warmupQueued = 0;
+  private warmupCompleted = 0;
+  private warmupActive = false;
 
   preload(ids: readonly CreatureAssetId[]): void {
     for (const id of ids) void this.loadPrepared(id).catch(() => undefined);
+  }
+
+  /**
+   * Decodes depth-band assets one at a time before the player reaches them.
+   * Sequential spacing avoids stacking several expensive GLB parses on the
+   * exact frame the camera crosses into deeper water.
+   */
+  preloadStaggered(ids: readonly CreatureAssetId[], spacingMs = 650): void {
+    // The contest package favors a small, immediately interactive startup
+    // footprint and lazy per-biome loading. The full local build can spend
+    // spare desktop memory to remove the common descent-time decode hitch.
+    if (CONTEST_SAFE_CREATURES) return;
+    const queue = [...new Set(ids)].filter((id) => !this.cache.has(id));
+    if (queue.length === 0) return;
+    this.warmupQueued += queue.length;
+    this.warmupActive = true;
+    const next = (): void => {
+      const id = queue.shift();
+      if (!id) {
+        this.warmupActive = false;
+        return;
+      }
+      void this.loadPrepared(id)
+        .catch(() => undefined)
+        .finally(() => {
+          this.warmupCompleted += 1;
+          window.setTimeout(next, spacingMs);
+        });
+    };
+    window.setTimeout(next, Math.min(400, spacingMs));
   }
 
   attach(id: CreatureAssetId, anchor: THREE.Group): void {
@@ -241,6 +275,7 @@ export class CreatureAssetLibrary {
       animatedInstances: this.mixers.length,
       staticMeshesBeforeMerge: this.staticMeshesBeforeMerge,
       staticMeshesAfterMerge: this.staticMeshesAfterMerge,
+      warmup: { queued: this.warmupQueued, completed: this.warmupCompleted, active: this.warmupActive },
     };
   }
 

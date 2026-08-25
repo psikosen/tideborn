@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5173`. The title screen offers **Enter the water**, **Continue** (enabled when an autosave exists), **Load ▸** (manual slots), and **Settings** (accessibility panel).
 
 Production build:
 
@@ -44,7 +44,7 @@ npm run preview
 | I | Open or close crafting |
 | C | Toggle adaptive camouflage; chromatophores match the live terrain material beneath the body |
 | Ctrl + S | Squeeze through a narrow passage |
-| T | Sleep inside the den |
+| T | Sleep inside the den · inside a claimed den with other dens, opens den-network travel |
 | M | Open or close the fog-of-war world map and discovered-den atlas |
 | Esc | Pause or close crafting |
 | F | Toggle fullscreen |

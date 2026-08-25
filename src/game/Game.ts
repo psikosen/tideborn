@@ -326,6 +326,18 @@ export class TidebornGame {
   private cameraShakePhase = 0;
   private regrowthQueue: Array<{ id: string; dueAt: number }> = [];
   private denMarkerGroups = new Map<string, THREE.Group>();
+  private beginPendingFromMenu = false;
+
+  private hasAutosave(): boolean {
+    try {
+      const raw = localStorage.getItem(AUTOSAVE_SLOT);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw) as { sections?: { core?: unknown } };
+      return Boolean(parsed?.sections?.core);
+    } catch {
+      return false;
+    }
+  }
   private ecoBaseline: EcosystemState = { kelpCover: 100, shellfish: 320, smallFish: 740, birds: 22, snakes: 5, sedimentStability: 100 };
   private thunderstorm!: ThunderstormVFXSystem;
   private creatureAssets = new CreatureAssetLibrary();
@@ -524,15 +536,18 @@ export class TidebornGame {
     this.resize();
     this.updateUI();
     this.render();
+    this.warmupRenderTiers();
 
     // Decode large deep-fauna assets sequentially while the player is still
     // at the title/coast, rather than hitching on each depth-band crossing.
-    // Full local desktop builds trade spare memory for a hitch-free descent.
-    // Coarse-pointer/mobile and contest-safe sessions keep models lazy so the
-    // title screen does not decode every specimen into a constrained budget.
+    // Full local desktop builds trade spare memory for a hitch-free descent,
+    // so every deep model is queued here. Coarse-pointer/mobile and
+    // contest-safe sessions keep models lazy so the title screen does not
+    // decode every specimen into a constrained budget.
     if (!window.matchMedia('(pointer: coarse)').matches) {
       this.creatureAssets.preloadStaggered([
         'twilight-emperor', 'midnight-angler', 'abyss-spinefish', 'hadal-stalker',
+        'cyan-abyss-hunter', 'abyss-manta', 'bloodfin-leviathan',
       ]);
     }
 
@@ -542,6 +557,36 @@ export class TidebornGame {
     (window as unknown as { render_game_to_text: () => string }).render_game_to_text = () => this.renderGameToText();
     (window as unknown as { advanceTime: (ms: number) => void }).advanceTime = (ms: number) => this.advanceTime(ms);
     (window as unknown as { tidebornSave: SaveLoadSystem }).tidebornSave = this.saveLoad;
+    (window as unknown as { tidebornDev: unknown }).tidebornDev = {
+      teleport: (x: number, y: number) => {
+        this.player.x = x;
+        this.player.y = y;
+        this.player.vx = 0;
+        this.player.vy = 0;
+        this.cameraTarget.set(x, y);
+        this.worldMap.visit(x, y);
+      },
+      grant: (resource: ResourceKey, count: number) => {
+        this.inventory[resource] += count;
+      },
+      jumpToSecondSpring: () => {
+        this.elapsed = Math.max(this.elapsed, this.seasonSystem.secondSpringAtSeconds - 1.5);
+      },
+    };
+  }
+
+  private warmupRenderTiers(): void {
+    const width = Math.max(8, this.root.clientWidth || 8);
+    const height = Math.max(8, this.root.clientHeight || 8);
+    const originalRatio = this.renderer.getPixelRatio();
+    for (const ratio of [Math.min(window.devicePixelRatio, 1.5), 1.25, 1]) {
+      if (Math.abs(ratio - originalRatio) < 0.01) continue;
+      this.renderer.setPixelRatio(ratio);
+      this.composer.setPixelRatio(ratio);
+      this.composer.setSize(width, height);
+      this.composer.render();
+    }
+    this.resize();
   }
 
   private setupSaveLoad(): void {
@@ -1272,8 +1317,14 @@ export class TidebornGame {
         <section class="menu-copy">
           <div class="logo-mark"><i></i> PLANETARY SURVIVAL PROTOTYPE</div>
           <h1>Tide<span>born</span></h1>
-          <p class="menu-tagline">You are small. The living planet is not. Gather with eight arms, excavate a den, and survive the storm already moving toward your island.</p>
-          <button class="start-button" id="start-btn">Enter the water</button><span class="seed">BELT 03 · SEED ${PLANET_SEED}</span>
+          <p class="menu-tagline">You are small. The living planet is not. Gather with eight arms, excavate a den network, and survive two winters until the second spring.</p>
+          <div class="menu-actions" style="display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-bottom:10px;">
+            <button class="start-button" id="start-btn" style="margin:0;">Enter the water</button>
+            <button class="menu-secondary-button" id="continue-btn"${this.hasAutosave() ? '' : ' disabled style="opacity:.45;cursor:default;"'}>Continue</button>
+            <button class="menu-secondary-button" id="record-btn">Load ▸</button>
+            <button class="menu-secondary-button" id="settings-btn">Settings</button>
+          </div>
+          <span class="seed">${this.hasAutosave() ? `AUTOSAVE FOUND · DAY ${(JSON.parse(localStorage.getItem('tideborn-autosave') ?? '{}')?.dayNumber ?? 0) + 1}` : 'NO AUTOSAVE'} · BELT 03 · SEED ${PLANET_SEED}</span>
         </section>
         <aside class="menu-controls">
           <h2>Octopus techniques</h2>
@@ -1312,6 +1363,24 @@ export class TidebornGame {
     this.hotbar = this.ui.querySelector<HTMLElement>('.tool-hotbar')!;
 
     this.menu.querySelector('#start-btn')?.addEventListener('click', () => this.begin());
+    this.menu.querySelector('#continue-btn')?.addEventListener('click', (event) => {
+      const button = event.currentTarget as HTMLButtonElement;
+      if (button.disabled) return;
+      if (this.restoreMidGame(AUTOSAVE_SLOT).ok) {
+        this.begin();
+        this.setMessage(`Autosave restored · day ${Math.floor(this.elapsed / DAY_LENGTH) + 1}. Welcome back to the water.`);
+      } else {
+        button.textContent = 'No autosave';
+        button.disabled = true;
+      }
+    });
+    this.menu.querySelector('#record-btn')?.addEventListener('click', () => {
+      this.beginPendingFromMenu = true;
+      this.toggleRecordPanel(true);
+    });
+    this.menu.querySelector('#settings-btn')?.addEventListener('click', () => {
+      this.accessibility.toggle(true);
+    });
     this.craftPanel.querySelector('[data-close-craft]')?.addEventListener('click', () => this.toggleCraft(false));
     this.ui.querySelector('[data-craft-toggle]')?.addEventListener('click', () => this.toggleCraft());
     this.hotbar.addEventListener('click', (event) => {
@@ -1438,7 +1507,12 @@ export class TidebornGame {
 
   private begin(): void {
     this.mode = 'playing';
+    this.beginPendingFromMenu = false;
     this.tutorial.begin(this.elapsed);
+    const travelPanel = this.ui.querySelector<HTMLElement>('[data-ui="travel"]');
+    if (travelPanel) travelPanel.style.display = 'none';
+    const recordPanel = this.ui.querySelector<HTMLElement>('[data-ui="record"]');
+    if (recordPanel) recordPanel.style.display = 'none';
     this.menu.classList.add('hidden');
     this.syncMobileControlsVisibility();
     this.sound.start();
@@ -3001,6 +3075,10 @@ export class TidebornGame {
       loadButton.addEventListener('click', () => {
         const result = this.restoreMidGame(slot.name);
         this.toggleRecordPanel(false);
+        if (result.ok && this.beginPendingFromMenu && this.mode === 'menu') {
+          this.beginPendingFromMenu = false;
+          this.begin();
+        }
         this.setMessage(result.ok
           ? `${slot.label} restored · day ${Math.floor(this.elapsed / DAY_LENGTH) + 1}.`
           : `Restore failed · ${result.error ?? 'unknown error'}.`);
@@ -3797,6 +3875,7 @@ export class TidebornGame {
   }
 
   private updateUI(): void {
+    this.sound.heartbeat();
     const setText = (selector: string, text: string) => { const el = this.ui.querySelector(selector); if (el) el.textContent = text; };
     const setVital = (kind: string, value: number) => {
       setText(`[data-vital="${kind}"]`, Math.round(value).toString());

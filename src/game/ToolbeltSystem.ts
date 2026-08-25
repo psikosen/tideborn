@@ -26,7 +26,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     label: 'Bare arms',
     use: 'Grip, pull, crush, and slowly excavate.',
     icon: './assets/tool-icons/bare-arms.png',
-    dig: { strength: 0.65, radius: 0.38 },
+    dig: { strength: 0.7, radius: 0.38 },
   },
   {
     id: 'shellBlade',

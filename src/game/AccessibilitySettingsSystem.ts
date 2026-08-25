@@ -253,7 +253,7 @@ export class AccessibilitySettingsSystem {
     }
   }
 
-  private toggle(force?: boolean): void {
+  toggle(force?: boolean): void {
     const next = force ?? !this.open;
     if (next === this.open) return;
     this.open = next;
