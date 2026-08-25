@@ -9,6 +9,7 @@ export type TutorialStepId =
   | 'craft'
   | 'claimDen'
   | 'jetInfo'
+  | 'fieldkit'
   | 'brace'
   | 'prep';
 
@@ -43,6 +44,7 @@ const MOVE_DISTANCE_METERS = 4;
 const DIVE_DEPTH_MARGIN = 0.5;
 const TUTORIAL_TIME_LIMIT_SEC = 150;
 const JET_INFO_DISPLAY_SEC = 6;
+const FIELDKIT_DISPLAY_SEC = 7;
 const CONGRATS_DISPLAY_SEC = 8;
 const HIGHLIGHT_MS = 650;
 const SKIP_NOTE = 'skipped — explore later';
@@ -59,7 +61,8 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   { id: 'claimDen', title: 'Claim den', instruction: 'Press N inside a large enclosed chamber to claim it as a den.', hintKey: 'N' },
   { id: 'jetInfo', title: 'Jet propulsion', instruction: 'Shift spends one of three regenerating jet charges for a quick burst.', hintKey: 'Shift', optional: true },
   { id: 'brace', title: 'Brace', instruction: 'Press B beside a wall or floor to lock your suckers against the surge.', hintKey: 'B' },
-  { id: 'prep', title: 'Storm prep', instruction: 'Store food, reinforce the den with J, and place a lamp with V before day two.', hintKey: 'J · V', optional: true },
+  { id: 'fieldkit', title: 'Field kit', instruction: 'Journal opens with P, the discovery codex with 0, and den-builder mode with L. Inside any den, T travels the network.', hintKey: 'P · 0 · L · T', optional: true },
+  { id: 'prep', title: 'Storm prep', instruction: 'Store food, reinforce the den with J, and place a lamp with V before day two — then survive through the second spring.', hintKey: 'J · V', optional: true },
 ];
 
 const PREP_CHECKLIST: readonly string[] = [
@@ -67,6 +70,7 @@ const PREP_CHECKLIST: readonly string[] = [
   'Den claimed — press N inside a chamber',
   'Reinforced — press J with two ironstone nodules',
   'Lamp placed — press V while carrying glow kelp',
+  'Field kit — journal P · codex 0 · den-builder L · travel T',
 ];
 
 const ACTION_STEPS: Readonly<Record<string, TutorialStepId>> = {
@@ -161,6 +165,7 @@ export class OnboardingTutorialSystem {
     if (!this.started) return;
     const active = TUTORIAL_STEPS[this.activeIndex];
     if (active?.id === 'jetInfo' && this.lastElapsed - this.stepShownAt >= JET_INFO_DISPLAY_SEC) this.completeStep('jetInfo');
+    if (active?.id === 'fieldkit' && this.lastElapsed - this.stepShownAt >= FIELDKIT_DISPLAY_SEC) this.completeStep('fieldkit');
     if (TUTORIAL_STEPS[this.activeIndex]?.id === 'prep' && this.lastElapsed >= DAY_SECONDS) this.completeStep('prep');
     if (this.lastElapsed - this.startElapsed > TUTORIAL_TIME_LIMIT_SEC) this.skipRemaining(SKIP_NOTE);
     this.evaluate();
@@ -440,6 +445,7 @@ export class OnboardingTutorialSystem {
     }
 
     panel.append(header, title, instruction, keyRow, checklist, pips);
+    panel.style.zoom = 'var(--tb-ui-scale, 1)';
     this.uiRoot.appendChild(panel);
     this.panel = panel;
     this.refs = { eyebrow, title, instruction, keyChip, keyRow, pips: dots, checklist, skipButton, dismissButton };

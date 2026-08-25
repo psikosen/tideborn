@@ -212,6 +212,7 @@ export class DiscoveryLoreSystem {
     this.root = built.root;
     this.listHost = built.listHost;
     this.countLabel = built.countLabel;
+    this.root.style.zoom = 'var(--tb-ui-scale, 1)';
     document.body.appendChild(this.root);
     window.addEventListener('keydown', (event) => {
       if (!this.openState || event.code !== 'Escape') return;

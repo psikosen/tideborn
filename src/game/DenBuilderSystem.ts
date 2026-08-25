@@ -224,6 +224,7 @@ export class DenBuilderSystem {
     });
     nameRow.append(nameInput, applyButton, suggestButton);
     this.hud.append(this.hudTitle, this.hudBody, this.hudHint, nameRow);
+    this.hud.style.zoom = 'var(--tb-ui-scale, 1)';
     uiRoot.appendChild(this.hud);
   }
 

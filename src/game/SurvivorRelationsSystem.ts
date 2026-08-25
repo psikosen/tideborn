@@ -272,6 +272,7 @@ export class SurvivorRelationsSystem {
     const host = document.createElement('div');
     Object.assign(host.style, { display: 'flex', flexDirection: 'column', gap: '4px' } as Partial<CSSStyleDeclaration>);
     panel.append(title, host);
+    panel.style.zoom = 'var(--tb-ui-scale, 1)';
     root.appendChild(panel);
     this.panel = panel;
     this.rowsHost = host;

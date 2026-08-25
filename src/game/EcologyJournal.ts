@@ -399,6 +399,7 @@ export class EcologyJournal {
         </section>
         <div class="eco-journal-list"></div>
       </section>`;
+    overlay.style.zoom = 'var(--tb-ui-scale, 1)';
     document.body.appendChild(overlay);
     this.overlay = overlay;
     this.subElement = overlay.querySelector<HTMLElement>('.eco-journal-sub');

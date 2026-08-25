@@ -118,11 +118,16 @@ const STORM_WARNING = DAY_LENGTH * 2.4;
 const STORM_START = DAY_LENGTH * 2.7;
 const STORM_PEAK = DAY_LENGTH * 3.075;
 const STORM_END = DAY_LENGTH * 3.425;
+const SQUALL_START = DAY_LENGTH * 9.525;
+const SQUALL_PEAK = DAY_LENGTH * 10.425;
+const SQUALL_END = DAY_LENGTH * 11.325;
 const FIXED_DT = 1 / 60;
 const MAX_RENDER_PIXELS = 2560 * 1440;
 const NORMAL_DIG_POWER_MULTIPLIER = 2.2;
 const DIG_RADIUS_MULTIPLIER = 1.3;
 const KELP_REGROWTH_DAYS = 2.5;
+const KELP_REGROWTH_GROW_SECONDS = 2.6;
+const KELP_REGROWTH_START_SCALE = 0.16;
 
 const SUPPLY_HUD_ITEMS: Array<{ key: ResourceKey; label: string; icon: string }> = [
   { key: 'food', label: 'Fresh food', icon: './assets/resources/food.png' },
@@ -325,6 +330,7 @@ export class TidebornGame {
   private lastBiteWindow: { id: string; px: number; py: number; t: number } | null = null;
   private cameraShakePhase = 0;
   private regrowthQueue: Array<{ id: string; dueAt: number }> = [];
+  private regrowthGrowing = new Map<string, number>();
   private denMarkerGroups = new Map<string, THREE.Group>();
   private beginPendingFromMenu = false;
 
@@ -387,6 +393,7 @@ export class TidebornGame {
   private firstStormPulse = false;
   private endingShown = false;
   private firstWinterPassed = false;
+  private squallWarned = false;
   private lastSeasonBannerId: string | null = null;
   private message = '';
   private messageUntil = 0;
@@ -3435,6 +3442,13 @@ export class TidebornGame {
         if (!visual.visible) continue;
       }
       if (entity.kind === 'kelp' || entity.kind === 'bush') {
+        const growStart = this.regrowthGrowing.get(entity.id);
+        if (growStart !== undefined) {
+          const t = clamp((this.elapsed - growStart) / KELP_REGROWTH_GROW_SECONDS, 0, 1);
+          const eased = 1 - Math.pow(1 - t, 3);
+          visual.scale.setScalar(KELP_REGROWTH_START_SCALE + (1 - KELP_REGROWTH_START_SCALE) * eased);
+          if (t >= 1) this.regrowthGrowing.delete(entity.id);
+        }
         visual.children.forEach((child, i) => {
           if (i === visual.children.length - 1) return;
           child.rotation.z = Math.sin(this.elapsed * (1.4 + storm * 2.5) + child.userData.phase) * (0.045 + storm * 0.12);
@@ -3660,11 +3674,16 @@ export class TidebornGame {
         'Autumn': 'The light thins. Kelp grows slower now — harvest carefully.',
         'First thaw': 'Meltwater floods the shallows and kelp regrows fast. Beware freshets near the shore.',
         'Long sun': 'Abundance returns. Store food, expand the network, prepare.',
-        'Second autumn': 'The light thins again. Winter comes around once more.',
+        'Second autumn': 'The light thins again. A squall will cross mid-season — weaker than the first storm, still hungry.',
         'The second winter': 'One more winter. Hold what you built.',
       };
       const text = flavor[seasonNow.label];
       if (text && previous !== null) this.showBanner(seasonNow.label, text, 4.8);
+    }
+    if (this.elapsed >= SQUALL_PEAK - DAY_LENGTH * 0.4 && !this.squallWarned) {
+      this.squallWarned = true;
+      this.sound.pulse('storm');
+      this.showBanner('Autumn squall', 'A smaller sister of the first storm crosses the belt. Brace anyway.', 4.6);
     }
     if (this.elapsed >= STORM_END && !this.firstWinterPassed) {
       this.firstWinterPassed = true;
@@ -3756,6 +3775,10 @@ export class TidebornGame {
     if (this.elapsed < STORM_START) return ((this.elapsed - STORM_WARNING) / (STORM_START - STORM_WARNING)) * 0.48;
     if (this.elapsed < STORM_PEAK) return 0.48 + ((this.elapsed - STORM_START) / (STORM_PEAK - STORM_START)) * 0.52;
     if (this.elapsed < STORM_END) return 1 - ((this.elapsed - STORM_PEAK) / (STORM_END - STORM_PEAK)) * 0.88;
+    if (this.elapsed >= SQUALL_START && this.elapsed < SQUALL_END) {
+      const t = (this.elapsed - SQUALL_START) / (SQUALL_END - SQUALL_START);
+      return Math.sin(t * Math.PI) * 0.45;
+    }
     return 0;
   }
 
@@ -3813,7 +3836,11 @@ export class TidebornGame {
       if (!entity || !entity.gathered) continue;
       entity.gathered = false;
       const visual = this.entityVisuals.get(entity.id);
-      if (visual) visual.visible = true;
+      if (visual) {
+        visual.visible = true;
+        visual.scale.setScalar(KELP_REGROWTH_START_SCALE);
+        if (entity.kind === 'kelp' || entity.kind === 'bush') this.regrowthGrowing.set(entity.id, this.elapsed);
+      }
       if (Math.hypot(entity.x - this.player.x, entity.y - this.player.y) < 9) {
         this.spawnBurst(entity.x, entity.y, '#7fe0a8');
       }
