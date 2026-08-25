@@ -157,6 +157,8 @@ export class AccessibilitySettingsSystem {
 
   apply(): void {
     document.documentElement.style.setProperty('--tb-ui-scale', String(this.settings.uiTextScale));
+    const host = document.querySelector<HTMLElement>('.tba11y-root');
+    if (host) host.style.zoom = String(this.settings.uiTextScale);
     document.body.classList.toggle('tba11y-reduce-motion', this.settings.motionReduce);
     document.body.classList.toggle('tba11y-colorsafe', this.settings.colorSafeAlerts);
     document.body.classList.toggle('tba11y-low-fx', this.settings.reduceParticles || this.settings.shaderQuality !== 'high');
