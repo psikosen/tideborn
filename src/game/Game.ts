@@ -83,6 +83,19 @@ import {
 
 type GameMode = 'menu' | 'playing' | 'paused' | 'won' | 'lost';
 
+function buttonStyle(disabled: boolean): Partial<CSSStyleDeclaration> {
+  return {
+    background: disabled ? 'rgba(30,44,48,.6)' : 'rgba(15,64,58,.9)',
+    border: '1px solid rgba(125,238,216,.4)',
+    borderRadius: '7px',
+    color: disabled ? '#5d7570' : '#dff5ec',
+    font: 'inherit',
+    fontSize: '10px',
+    padding: '4px 8px',
+    cursor: disabled ? 'default' : 'pointer',
+  };
+}
+
 interface SurvivalState {
   health: number;
   hunger: number;
@@ -109,6 +122,7 @@ const FIXED_DT = 1 / 60;
 const MAX_RENDER_PIXELS = 2560 * 1440;
 const NORMAL_DIG_POWER_MULTIPLIER = 2.2;
 const DIG_RADIUS_MULTIPLIER = 1.3;
+const KELP_REGROWTH_DAYS = 2.5;
 
 const SUPPLY_HUD_ITEMS: Array<{ key: ResourceKey; label: string; icon: string }> = [
   { key: 'food', label: 'Fresh food', icon: './assets/resources/food.png' },
@@ -310,6 +324,8 @@ export class TidebornGame {
   private ecoSampleAccumulator = 0;
   private lastBiteWindow: { id: string; px: number; py: number; t: number } | null = null;
   private cameraShakePhase = 0;
+  private regrowthQueue: Array<{ id: string; dueAt: number }> = [];
+  private denMarkerGroups = new Map<string, THREE.Group>();
   private ecoBaseline: EcosystemState = { kelpCover: 100, shellfish: 320, smallFish: 740, birds: 22, snakes: 5, sedimentStability: 100 };
   private thunderstorm!: ThunderstormVFXSystem;
   private creatureAssets = new CreatureAssetLibrary();
@@ -358,6 +374,8 @@ export class TidebornGame {
   private ventDiscovered = false;
   private firstStormPulse = false;
   private endingShown = false;
+  private firstWinterPassed = false;
+  private lastSeasonBannerId: string | null = null;
   private message = '';
   private messageUntil = 0;
   private bannerUntil = 0;
@@ -612,6 +630,18 @@ export class TidebornGame {
     this.saveLoad.register('excavation', {
       save: () => this.world.serializeModifiedCells(),
       load: (data) => this.world.importModifiedCells(data),
+    });
+    this.saveLoad.register('regrowth', {
+      save: () => ({ queue: this.regrowthQueue }),
+      load: (data) => {
+        const section = data as { queue?: unknown };
+        if (!Array.isArray(section.queue)) return;
+        this.regrowthQueue = section.queue
+          .filter((entry): entry is { id: string; dueAt: number } => {
+            const candidate = entry as { id?: unknown; dueAt?: unknown };
+            return typeof candidate.id === 'string' && typeof candidate.dueAt === 'number';
+          });
+      },
     });
     this.saveLoad.register('groundDrops', {
       save: () => ({
@@ -1155,6 +1185,23 @@ export class TidebornGame {
       <div class="prompt panel" data-ui="prompt"></div>
       <div class="banner" data-ui="banner"><div class="eyebrow">TIDEBORN</div><h3></h3><p></p></div>
       <div class="pause-chip panel" data-ui="pause">PAUSED · PRESS ESC</div>
+      <section data-ui="travel" aria-hidden="true" style="display:none;position:absolute;left:50%;top:16%;transform:translateX(-50%);z-index:60;flex-direction:column;gap:8px;width:min(340px,calc(100vw - 28px));padding:14px 16px;background:rgba(4,20,24,.92);border:1px solid rgba(125,238,216,.4);border-radius:12px;pointer-events:auto;box-shadow:0 18px 50px rgba(0,0,0,.5);">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <b style="letter-spacing:.12em;font-size:11px;color:#9df2dd;">DEN NETWORK TRAVEL</b>
+          <button type="button" data-travel-close aria-label="Close travel panel" style="background:none;border:none;color:#cfe9e2;font-size:16px;cursor:pointer;">×</button>
+        </div>
+        <div data-travel-list style="display:flex;flex-direction:column;gap:6px;"></div>
+        <button type="button" data-travel-sleep style="margin-top:2px;background:rgba(15,64,58,.9);border:1px solid rgba(125,238,216,.45);border-radius:8px;color:#dff5ec;font:inherit;font-size:11px;padding:7px;cursor:pointer;">Sleep here instead</button>
+        <small style="opacity:.62;font-size:9.5px;">Travel spends stored food from this den. T opens and closes.</small>
+      </section>
+      <section data-ui="record" aria-hidden="true" style="display:none;position:absolute;left:50%;top:14%;transform:translateX(-50%);z-index:60;flex-direction:column;gap:8px;width:min(360px,calc(100vw - 28px));max-height:70vh;overflow:auto;padding:14px 16px;background:rgba(4,20,24,.94);border:1px solid rgba(125,238,216,.4);border-radius:12px;pointer-events:auto;box-shadow:0 18px 50px rgba(0,0,0,.5);">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <b style="letter-spacing:.12em;font-size:11px;color:#9df2dd;">EXPEDITION RECORD</b>
+          <button type="button" data-record-close aria-label="Close record panel" style="background:none;border:none;color:#cfe9e2;font-size:16px;cursor:pointer;">×</button>
+        </div>
+        <div data-record-list style="display:flex;flex-direction:column;gap:7px;"></div>
+        <small style="opacity:.62;font-size:9.5px;">Autosave writes every ten seconds. Manual slots survive New Game.</small>
+      </section>
       <section class="results-screen" data-ui="results" aria-hidden="true" style="display:none;position:absolute;inset:0;z-index:80;align-items:center;justify-content:center;padding:22px;background:rgba(0,8,11,.86);pointer-events:auto;">
         <div class="results-card panel" style="width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 40px);overflow:auto;padding:clamp(22px,5vw,42px);text-align:center;border:1px solid rgba(125,238,216,.42);box-shadow:0 30px 90px rgba(0,0,0,.62);">
           <div class="eyebrow" data-results-outcome>FIRST WINTER</div>
@@ -1274,6 +1321,18 @@ export class TidebornGame {
     });
     this.ui.querySelector('[data-play-again]')?.addEventListener('click', () => this.reset());
     this.ui.querySelector('[data-settings-toggle]')?.addEventListener('click', () => this.toggleSettings());
+    this.ui.querySelector('[data-travel-close]')?.addEventListener('click', () => this.toggleTravelPanel(false));
+    this.ui.querySelector('[data-travel-sleep]')?.addEventListener('click', () => {
+      this.toggleTravelPanel(false);
+      this.sleep();
+    });
+    this.ui.querySelector('[data-record-close]')?.addEventListener('click', () => this.toggleRecordPanel(false));
+    const pauseChip = this.ui.querySelector<HTMLElement>('[data-ui="pause"]');
+    if (pauseChip) {
+      pauseChip.style.pointerEvents = 'auto';
+      pauseChip.style.cursor = 'pointer';
+      pauseChip.addEventListener('click', () => this.toggleRecordPanel());
+    }
     this.ui.querySelector('[data-map-toggle]')?.addEventListener('click', () => this.toggleAtlas());
     this.atlasPanel.querySelector('[data-close-atlas]')?.addEventListener('click', () => this.toggleAtlas(false));
     this.settingsPanel.querySelector('[data-close-settings]')?.addEventListener('click', () => this.toggleSettings(false));
@@ -1342,7 +1401,11 @@ export class TidebornGame {
       if (event.code === 'Digit0' && this.mode !== 'menu') this.discoveries.toggle();
       if (event.code === 'KeyP' && this.mode !== 'menu') this.ecologyJournal.toggle();
       if (event.code === 'Escape' && !document.fullscreenElement && this.mode !== 'menu') {
-        if (this.settingsOpen) this.toggleSettings(false);
+        const travelPanel = this.ui.querySelector<HTMLElement>('[data-ui="travel"]');
+        const recordPanel = this.ui.querySelector<HTMLElement>('[data-ui="record"]');
+        if (travelPanel && travelPanel.style.display === 'flex') this.toggleTravelPanel(false);
+        else if (recordPanel && recordPanel.style.display === 'flex') this.toggleRecordPanel(false);
+        else if (this.settingsOpen) this.toggleSettings(false);
         else if (this.atlasOpen) this.toggleAtlas(false);
         else if (this.craftOpen) this.toggleCraft(false);
         else this.togglePause();
@@ -1647,6 +1710,7 @@ export class TidebornGame {
       season,
     });
     const activeDenForSeason = this.denNetwork.currentDen(this.player.x, this.player.y);
+    const heaterCount = activeDenForSeason?.artifacts.filter((artifact) => artifact === 'thermal-core').length ?? 0;
     this.seasonalWorld.update(dt, this.elapsed, {
       season,
       cryoLocal: this.cryosphere.snapshot().local,
@@ -1656,7 +1720,8 @@ export class TidebornGame {
         (activeDenForSeason?.curtains ?? 0) * 0.34
         + (activeDenForSeason?.braces ?? 0) * 0.12
         + (activeDenForSeason?.mineralReinforcement ?? 0) * 0.08
-        + (activeDenForSeason?.bowls ?? 0) * 0.1,
+        + (activeDenForSeason?.bowls ?? 0) * 0.1
+        + heaterCount * 0.3,
         0, 1,
       ),
     });
@@ -1792,7 +1857,7 @@ export class TidebornGame {
     if (events.eat) this.eat();
     if (this.keys.pressed.has('KeyU')) this.useVentTonic();
     if (events.place) this.placeInDen();
-    if (events.sleep) this.sleep();
+    if (events.sleep) this.handleSleepInput();
     if (this.keys.pressed.has('KeyN')) this.claimDen();
     if (this.keys.pressed.has('KeyJ')) this.reinforceDenWithMinerals();
     if (this.keys.pressed.has('KeyY')) this.seasonFood();
@@ -2010,12 +2075,7 @@ export class TidebornGame {
         if (nearby) this.setMessage('A juvenile octopus emerges from a neighboring protected shelter.');
       }
     }
-    const dayNow = this.elapsed / DAY_LENGTH;
-    const stormIncomingDays = season.id === 'winter'
-      ? null
-      : season.id === 'storm-season'
-        ? season.daysUntilWinter
-        : Math.max(0.1, STORM_WARNING / DAY_LENGTH - dayNow);
+    const stormIncomingDays = season.id === 'storm-season' ? season.daysUntilWinter : null;
     const relationEvents = this.survivorRelations.update(dt, {
       px: this.player.x,
       py: this.player.y,
@@ -2032,6 +2092,7 @@ export class TidebornGame {
       })),
       playerFoodCount: this.inventory.food,
       playerDenIds: this.denNetwork.snapshot(this.player.x, this.player.y).sites.filter((site) => site.discovered && !site.destroyed).map((site) => site.id),
+      museumDens: Math.min(3, this.denNetwork.serializeState().filter((site) => !site.destroyed && site.artifacts.includes('museum-fossil')).length),
       stormIncomingDays,
     });
     for (const relationEvent of relationEvents) {
@@ -2047,6 +2108,7 @@ export class TidebornGame {
       }
       this.ecoBaseline = { ...this.ecosystem };
     }
+    this.processRegrowth();
     this.trees.update(this.elapsed, storm);
     this.toolUseVisuals.update(this.elapsed, this.player);
     this.denDecorations.update(this.elapsed, storm);
@@ -2436,8 +2498,17 @@ export class TidebornGame {
     if (this.discoveries.recoverNearest(this.player.x, this.player.y)) {
       const found = this.discoveries.latestRecovery();
       this.sound.collect('generic');
-      if (found?.storyLine) this.showBanner(found.label, found.storyLine, 5.4);
-      else if (found) this.setMessage(`${found.label} recovered · logged in the Codex of the Tide [0].`);
+      if (found) {
+        if (found.kind === 'fossils') {
+          this.inventory.fossil += 1;
+          this.setMessage(`${found.label} recovered · +1 fossil specimen. Press V inside a den to mount it.`);
+        } else if (found.kind === 'geothermal') {
+          this.inventory.heaterCore += 1;
+          this.setMessage(`${found.label} recovered · +1 geothermal core. Press V inside a den to install it.`);
+        } else {
+          this.setMessage(`${found.label} recovered · logged in the Codex of the Tide [0].`);
+        }
+      }
       return;
     }
     const relicDrop = this.relics.nearest(this.player.x, this.player.y, 1.55);
@@ -2517,6 +2588,7 @@ export class TidebornGame {
       if (this.toolbelt.isEquipped('shellBlade', this.inventory)) {
         entity.gathered = true;
         const bonusFiber = this.octipoints.effect('harvestYield');
+        this.scheduleRegrowth(entity.id);
         this.inventory.fibers += Math.max(1, Math.round((3 + bonusFiber) * this.seasonalWorld.foodScarcityFactor));
         this.inventory.kelp += 1;
         this.ecosystem.kelpCover = Math.max(0, this.ecosystem.kelpCover - 2);
@@ -2726,7 +2798,19 @@ export class TidebornGame {
       return;
     }
     let placed = '';
-    if (this.inventory.glowKelp > 0 && this.bioluminescence.placeInDen(den.id)) {
+    if (this.inventory.fossil > 0) {
+      this.inventory.fossil -= 1;
+      den.artifacts.push('museum-fossil');
+      placed = `Fossil display mounted in ${den.name}. Visiting octopi linger over the ancient chambers.`;
+      this.createDenDecoration('mineral', den.artifacts.length, den);
+      this.recordOctoExperience('den-work', 22, 'Curated a fossil gallery');
+    } else if (this.inventory.heaterCore > 0) {
+      this.inventory.heaterCore -= 1;
+      den.artifacts.push('thermal-core');
+      placed = `Geothermal core bedded into ${den.name}'s floor. The chamber holds warmth through any winter.`;
+      this.createDenDecoration('mineral', den.artifacts.length, den);
+      this.recordOctoExperience('den-work', 26, 'Installed a geothermal core');
+    } else if (this.inventory.glowKelp > 0 && this.bioluminescence.placeInDen(den.id)) {
       this.inventory.glowKelp -= 1;
       den.bioLights += 1;
       placed = `Living seaweed pressed visibly into the chamber wall. ${den.bioLights} stacked frond${den.bioLights === 1 ? '' : 's'} provide a steady ${Math.round(this.bioluminescence.denRemainingSeconds(den.id))}-second reserve.`;
@@ -2836,6 +2920,188 @@ export class TidebornGame {
     group.add(shell, ring);
     group.position.set(den.x, den.y - 0.72, 3.1);
     this.scene.add(group);
+    if (!this.denMarkerGroups.has(den.id)) this.denMarkerGroups.set(den.id, group);
+    else {
+      const existing = this.denMarkerGroups.get(den.id)!;
+      this.scene.remove(existing);
+      this.denMarkerGroups.set(den.id, group);
+    }
+  }
+
+  private handleSleepInput(): void {
+    const travelPanel = this.ui.querySelector<HTMLElement>('[data-ui="travel"]');
+    if (travelPanel && travelPanel.style.display === 'flex') {
+      this.toggleTravelPanel(false);
+      return;
+    }
+    const current = this.denNetwork.currentDen(this.player.x, this.player.y);
+    if (!current) {
+      this.setMessage('You can only settle into deep sleep inside the den.');
+      return;
+    }
+    const destinations = this.denNetwork.snapshot(this.player.x, this.player.y).sites
+      .filter((site) => site.id !== current.id && !site.destroyed);
+    if (destinations.length === 0) {
+      this.sleep();
+      return;
+    }
+    this.toggleTravelPanel(true);
+  }
+
+  private toggleTravelPanel(open?: boolean): void {
+    const panel = this.ui.querySelector<HTMLElement>('[data-ui="travel"]');
+    if (!panel) return;
+    const show = open ?? panel.style.display !== 'flex';
+    if (show) this.refreshTravelPanel();
+    panel.style.display = show ? 'flex' : 'none';
+    panel.setAttribute('aria-hidden', String(!show));
+  }
+
+  private toggleRecordPanel(open?: boolean): void {
+    const panel = this.ui.querySelector<HTMLElement>('[data-ui="record"]');
+    if (!panel) return;
+    const show = open ?? panel.style.display !== 'flex';
+    if (show) this.refreshRecordPanel();
+    panel.style.display = show ? 'flex' : 'none';
+    panel.setAttribute('aria-hidden', String(!show));
+  }
+
+  private refreshRecordPanel(): void {
+    const host = this.ui.querySelector<HTMLElement>('[data-record-list]');
+    if (!host) return;
+    host.replaceChildren();
+    const slots: Array<{ name: string; label: string }> = [
+      { name: AUTOSAVE_SLOT, label: 'Autosave' },
+      { name: 'tideborn-slot-1', label: 'Slot I' },
+      { name: 'tideborn-slot-2', label: 'Slot II' },
+      { name: 'tideborn-slot-3', label: 'Slot III' },
+    ];
+    for (const slot of slots) {
+      const meta = this.saveLoad.peekSlot(slot.name);
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid rgba(125,238,216,.22);border-radius:9px;background:rgba(6,26,30,.7);';
+      const info = document.createElement('span');
+      info.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:2px;font-size:10.5px;';
+      info.innerHTML = `<b style="color:#dff5ec;">${slot.label}${meta.exists && meta.day !== undefined ? ` · day ${meta.day + 1}` : ''}</b><small style="opacity:.62;">${meta.exists ? `saved ${meta.savedAt ? new Date(meta.savedAt).toLocaleTimeString() : ''} · v${meta.version}` : 'empty'}</small>`;
+      const saveButton = document.createElement('button');
+      saveButton.type = 'button';
+      saveButton.textContent = 'Save';
+      saveButton.disabled = slot.name === AUTOSAVE_SLOT || this.mode === 'menu';
+      Object.assign(saveButton.style, buttonStyle(saveButton.disabled));
+      saveButton.addEventListener('click', () => {
+        this.saveLoad.persist(slot.name);
+        this.setMessage(`Expedition written to ${slot.label}.`);
+        this.refreshRecordPanel();
+      });
+      const loadButton = document.createElement('button');
+      loadButton.type = 'button';
+      loadButton.textContent = 'Load';
+      loadButton.disabled = !meta.exists;
+      Object.assign(loadButton.style, buttonStyle(loadButton.disabled));
+      loadButton.addEventListener('click', () => {
+        const result = this.restoreMidGame(slot.name);
+        this.toggleRecordPanel(false);
+        this.setMessage(result.ok
+          ? `${slot.label} restored · day ${Math.floor(this.elapsed / DAY_LENGTH) + 1}.`
+          : `Restore failed · ${result.error ?? 'unknown error'}.`);
+      });
+      const eraseButton = document.createElement('button');
+      eraseButton.type = 'button';
+      eraseButton.textContent = '×';
+      eraseButton.setAttribute('aria-label', `Erase ${slot.label}`);
+      eraseButton.disabled = !meta.exists || slot.name === AUTOSAVE_SLOT;
+      Object.assign(eraseButton.style, buttonStyle(eraseButton.disabled));
+      eraseButton.addEventListener('click', () => {
+        this.saveLoad.eraseSlot(slot.name);
+        this.refreshRecordPanel();
+      });
+      row.append(info, saveButton, loadButton, eraseButton);
+      host.appendChild(row);
+    }
+  }
+
+  private restoreMidGame(slotName: string): ReturnType<SaveLoadSystem['restore']> {
+    const result = this.saveLoad.restore(slotName);
+    if (!result.ok) return result;
+    this.rebuildDenMarkers();
+    this.bioluminescence.reconcile(this.inventory.glowKelp, this.denNetwork.biolightCounts());
+    this.cameraTarget.set(this.player.x, this.player.y);
+    this.worldMap.visit(this.player.x, this.player.y);
+    this.refreshWorldMap();
+    this.refreshHotbar(true);
+    this.updateUI();
+    return result;
+  }
+
+  private rebuildDenMarkers(): void {
+    for (const group of this.denMarkerGroups.values()) {
+      this.scene.remove(group);
+      group.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        mesh.geometry?.dispose?.();
+      });
+    }
+    this.denMarkerGroups.clear();
+    for (const site of this.denNetwork.serializeState()) {
+      if (site.discovered && !site.destroyed) this.createDenMarker(site);
+    }
+  }
+
+  private refreshTravelPanel(): void {
+    const host = this.ui.querySelector<HTMLElement>('[data-travel-list]');
+    if (!host) return;
+    const current = this.denNetwork.currentDen(this.player.x, this.player.y);
+    const sites = this.denNetwork.snapshot(this.player.x, this.player.y).sites
+      .filter((site) => site && !site.destroyed && site.id !== current?.id);
+    host.replaceChildren();
+    for (const site of sites) {
+      const distance = Math.hypot(site.x - (current?.x ?? this.player.x), site.y - (current?.y ?? this.player.y));
+      const cost = Math.max(1, Math.round(distance / 6));
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 10px;background:rgba(15,64,58,.55);border:1px solid rgba(125,238,216,.35);border-radius:9px;color:#dff5ec;font:inherit;font-size:11px;cursor:pointer;text-align:left;';
+      row.innerHTML = `<span style="display:flex;flex-direction:column;gap:2px;"><b>${site.name}</b><small style="opacity:.66;">${Math.round(distance)} m · ${cost} stored food</small></span><em style="font-style:normal;color:#9df2dd;">TRAVEL ›</em>`;
+      row.addEventListener('mouseenter', () => { row.style.background = 'rgba(23,88,79,.75)'; });
+      row.addEventListener('mouseleave', () => { row.style.background = 'rgba(15,64,58,.55)'; });
+      row.addEventListener('click', () => this.travelTo(site.id, cost));
+      host.appendChild(row);
+    }
+    if (sites.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No other claimed dens yet. Claim more chambers with N.';
+      empty.style.cssText = 'opacity:.7;font-size:11px;';
+      host.appendChild(empty);
+    }
+  }
+
+  private travelTo(denId: string, cost: number): void {
+    const origin = this.denNetwork.currentDen(this.player.x, this.player.y);
+    const destination = this.denNetwork.serializeState().find((site) => site.id === denId);
+    if (!destination || destination.destroyed) return;
+    let paidFrom = '';
+    if ((origin?.foodStored ?? 0) >= cost) {
+      origin!.foodStored -= cost;
+      paidFrom = `${origin!.name} stores`;
+    } else if (this.inventory.food >= cost) {
+      this.inventory.food -= cost;
+      paidFrom = 'carried food';
+    } else {
+      this.setMessage(`Travel needs ${cost} stored food. Cache meals in the den first.`);
+      return;
+    }
+    this.toggleTravelPanel(false);
+    this.player.x = destination.x;
+    this.player.y = destination.y + 0.3;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.cameraTarget.set(this.player.x, this.player.y);
+    this.camera.position.x = this.player.x;
+    this.worldMap.visit(this.player.x, this.player.y);
+    this.refreshWorldMap();
+    this.elapsed += 2;
+    this.sound.play('denClaim');
+    this.recordOctoExperience('exploration', 10, `Traveled the den network to ${destination.name}`);
+    this.setMessage(`You slip through remembered passages to ${destination.name}. ${cost} food from ${paidFrom} spent on the journey.`);
   }
 
   private sleep(): void {
@@ -3307,13 +3573,34 @@ export class TidebornGame {
       this.sound.pulse('storm');
       this.showBanner('Landfall', 'Anchor yourself. Protect what you prepared.', 4.3);
     }
-    if (this.elapsed >= STORM_END && !this.endingShown) {
-      this.endingShown = true;
+    const seasonNow = this.seasonSystem.sample(this.elapsed);
+    if (seasonNow.label !== this.lastSeasonBannerId) {
+      const previous = this.lastSeasonBannerId;
+      this.lastSeasonBannerId = seasonNow.label;
+      const flavor: Record<string, string> = {
+        'Late summer': 'Warm shallows. Learn the reef while it is generous.',
+        'Autumn': 'The light thins. Kelp grows slower now — harvest carefully.',
+        'First thaw': 'Meltwater floods the shallows and kelp regrows fast. Beware freshets near the shore.',
+        'Long sun': 'Abundance returns. Store food, expand the network, prepare.',
+        'Second autumn': 'The light thins again. Winter comes around once more.',
+        'The second winter': 'One more winter. Hold what you built.',
+      };
+      const text = flavor[seasonNow.label];
+      if (text && previous !== null) this.showBanner(seasonNow.label, text, 4.8);
+    }
+    if (this.elapsed >= STORM_END && !this.firstWinterPassed) {
+      this.firstWinterPassed = true;
       const result = this.contestSession.finishStorm(this.contestInput());
       if (result.reason === 'den-collapse') {
         this.denNetwork.collapseAllDiscovered('Catastrophic storm surge at the arrival of winter');
       }
-      this.finish(result);
+      this.showBanner('The first winter', 'The surge passes into deep cold. Hold your dens until the second spring.', 5.2);
+      return;
+    }
+    if (this.elapsed >= this.seasonSystem.secondSpringAtSeconds && !this.endingShown) {
+      this.endingShown = true;
+      this.showBanner('The second spring', 'The ice lets go. The kelp greens. You endured both winters.', 5.4);
+      this.finish(this.contestSession.finishCampaign(this.contestInput()));
     }
   }
 
@@ -3364,7 +3651,7 @@ export class TidebornGame {
       const target = overlay.querySelector<HTMLElement>(selector);
       if (target) target.textContent = value;
     };
-    setText('[data-results-outcome]', result.outcome === 'won' ? 'FIRST WINTER · SURVIVED' : 'FIRST WINTER · RUN ENDED');
+    setText('[data-results-outcome]', result.reason === 'second-spring' ? 'TWO WINTERS · SURVIVED' : result.outcome === 'won' ? 'FIRST WINTER · SURVIVED' : 'RUN ENDED');
     setText('[data-results-title]', result.title);
     setText('[data-results-subtitle]', result.subtitle);
     const summary = overlay.querySelector<HTMLElement>('[data-results-summary]');
@@ -3430,6 +3717,36 @@ export class TidebornGame {
   private hideEntity(entity: WorldEntity): void {
     const visual = this.entityVisuals.get(entity.id);
     if (visual) visual.visible = false;
+  }
+
+  private scheduleRegrowth(entityId: string): void {
+    const springBonus = this.seasonalWorld.breedingWindow.intensity > 0.8 ? 0.55 : 1;
+    const dueAt = this.elapsed + KELP_REGROWTH_DAYS * DAY_LENGTH * springBonus;
+    this.regrowthQueue.push({ id: entityId, dueAt });
+  }
+
+  private processRegrowth(): void {
+    if (this.regrowthQueue.length === 0) return;
+    const ready = this.regrowthQueue.filter((entry) => this.elapsed >= entry.dueAt);
+    if (ready.length === 0) return;
+    this.regrowthQueue = this.regrowthQueue.filter((entry) => this.elapsed < entry.dueAt);
+    for (const entry of ready) {
+      const entity = this.entities.find((candidate) => candidate.id === entry.id);
+      if (!entity || !entity.gathered) continue;
+      entity.gathered = false;
+      const visual = this.entityVisuals.get(entity.id);
+      if (visual) visual.visible = true;
+      if (Math.hypot(entity.x - this.player.x, entity.y - this.player.y) < 9) {
+        this.spawnBurst(entity.x, entity.y, '#7fe0a8');
+      }
+    }
+    if (ready.length > 0 && this.messageUntil <= this.elapsed) {
+      const near = ready.some((entry) => {
+        const entity = this.entities.find((candidate) => candidate.id === entry.id);
+        return entity && Math.hypot(entity.x - this.player.x, entity.y - this.player.y) < 12;
+      });
+      if (near) this.setMessage('New growth unfurls where you cut carefully. The reef remembers restraint.');
+    }
   }
 
   private spawnBurst(x: number, y: number, color: string): void {
@@ -3781,7 +4098,7 @@ export class TidebornGame {
       lightOcclusion: this.lightOcclusionState,
       mode: this.mode,
       settingsOpen: this.settingsOpen,
-      objective: 'Reach first winter with seven linked dens or one large winter-ready den.',
+      objective: 'Survive two winters and reach the second spring. Seven linked dens or one winter-ready fortress carries you through.',
       tutorial: this.tutorial.snapshot(this.player.x, this.player.y),
       season: this.seasonSystem.sample(this.elapsed),
       cryosphere: this.cryosphere.snapshot(),

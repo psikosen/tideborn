@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BASE_SEA_LEVEL, PLANET_SEED, WORLD_MIN_X, WORLD_WIDTH, clamp, mulberry32 } from './data';
 
-export type SeasonSampleId = 'late-summer' | 'autumn' | 'storm-season' | 'winter';
+export type SeasonSampleId = 'late-summer' | 'autumn' | 'storm-season' | 'winter' | 'spring' | 'summer';
 
 export interface SeasonSampleShape {
   id: SeasonSampleId;
@@ -92,14 +92,18 @@ const SCARCITY_SPANS: Record<SeasonSampleId, Span> = {
   'late-summer': [1, 1],
   autumn: [0.92, 0.79],
   'storm-season': [0.7, 0.48],
-  winter: [0.45, 0.45],
+  winter: [0.45, 0.48],
+  spring: [0.72, 1],
+  summer: [1, 1],
 };
 
 const BREEDING_SPANS: Record<SeasonSampleId, Span> = {
   'late-summer': [1, 0.5],
   autumn: [0.5, 0.25],
-  'storm-season': [0.25, 0],
+  'storm-season': [0.25, 0.08],
   winter: [0, 0],
+  spring: [1, 0.8],
+  summer: [0.75, 0.55],
 };
 
 const AMBIENT_SPANS: Record<SeasonSampleId, Span> = {
@@ -107,6 +111,8 @@ const AMBIENT_SPANS: Record<SeasonSampleId, Span> = {
   autumn: [12.5, 8],
   'storm-season': [6, 1],
   winter: [-0.5, -2],
+  spring: [2, 12],
+  summer: [15, 18],
 };
 
 function lerp(a: number, b: number, t: number): number {
@@ -288,11 +294,11 @@ export class SeasonalWorldEffectsSystem {
     this.foodScarcityFactorValue = Number(spanValue(SCARCITY_SPANS[id], progress).toFixed(3));
     this.breedingIntensity = spanValue(BREEDING_SPANS[id], progress);
 
-    if (id === 'late-summer') this.birdPhase = 'present';
+    if (id === 'spring') this.birdPhase = this.freezeDaysValue > FREEZE_DAYS_FOR_RETURNING ? 'returning' : 'present';
+    else if (id === 'summer') this.birdPhase = 'present';
+    else if (id === 'late-summer') this.birdPhase = 'present';
     else if (id === 'autumn') this.birdPhase = progress < 0.55 ? 'present' : progress < 0.9 ? 'leaving' : 'gone';
     else if (id === 'storm-season') this.birdPhase = progress < 0.12 ? 'leaving' : 'gone';
-    else if (this.freezeDaysValue > FREEZE_DAYS_FOR_PRESENT) this.birdPhase = 'present';
-    else if (this.freezeDaysValue > FREEZE_DAYS_FOR_RETURNING) this.birdPhase = 'returning';
     else this.birdPhase = 'gone';
 
     const winterWeight = id === 'winter'
@@ -403,20 +409,20 @@ export class SeasonalWorldEffectsSystem {
 
   private evaluateThawFloodRisk(progress: number): ThawFloodRisk {
     const nearSurface = this.playerY > BASE_SEA_LEVEL - 3;
-    const warmOnset = this.season.id === 'late-summer' && progress < 0.2;
+    const thawOnset = (this.season.id === 'spring' && progress < 0.45) || (this.season.id === 'late-summer' && progress < 0.2);
     const meltEvidence = this.cryoLocal.snowCovered || this.cryoLocal.surfaceFrozen || this.snowDriftValue > 2;
     const warming = this.outsideTemperatureCValue > 0.5;
     const thinIce = this.cryoLocal.freezeCoverage > 0.04 && this.cryoLocal.freezeCoverage < 0.42;
     const reasons: string[] = [];
     let level: ThawFloodRisk['level'] = 'low';
-    if (warmOnset && nearSurface && meltEvidence && warming) {
+    if (thawOnset && nearSurface && meltEvidence && warming) {
       level = 'high';
       if (this.cryoLocal.snowCovered) reasons.push('snowpack melting into the intertidal zone');
       if (this.cryoLocal.surfaceFrozen) reasons.push('shorefast ice releasing meltwater');
       if (this.snowDriftValue > 2) reasons.push(`${Math.round(this.snowDriftValue)} cm of drift slumping at the waterline`);
-    } else if ((warmOnset && nearSurface) || (meltEvidence && nearSurface && warming) || (thinIce && nearSurface && warming)) {
+    } else if ((thawOnset && nearSurface) || (meltEvidence && nearSurface && warming) || (thinIce && nearSurface && warming)) {
       level = 'moderate';
-      if (warmOnset) reasons.push('early warm-season runoff building upstream');
+      if (thawOnset) reasons.push('meltwater building in the freshet channels');
       if (meltEvidence) reasons.push('residual frost sublimating on warm rock');
       if (thinIce) reasons.push('thin ice crust thinning under daylight');
     }

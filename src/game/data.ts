@@ -65,7 +65,9 @@ export type ResourceKey =
   | 'net'
   | 'kelpCurtain'
   | 'tunnelBrace'
-  | 'shellBowl';
+  | 'shellBowl'
+  | 'fossil'
+  | 'heaterCore';
 
 export type Inventory = Record<ResourceKey, number>;
 
@@ -105,6 +107,8 @@ export const EMPTY_INVENTORY: Inventory = {
   kelpCurtain: 0,
   tunnelBrace: 0,
   shellBowl: 0,
+  fossil: 0,
+  heaterCore: 0,
 };
 
 export interface Recipe {

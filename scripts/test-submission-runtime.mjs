@@ -81,7 +81,44 @@ try {
     const assets = JSON.parse(window.render_game_to_text()).creatureAssets;
     return assets.loaded.includes('shark') && assets.failed.length === 0;
   }, undefined, { timeout: 90_000 });
+  // Desktop proactively decodes deep fauna one at a time. Wait for the
+  // explicit queue state; networkidle alone can fire in the intentional gap
+  // between models and then report the next request as aborted on teardown.
+  await page.waitForFunction(() => {
+    const warmup = JSON.parse(window.render_game_to_text()).creatureAssets.warmup;
+    return warmup.queued === 0 || (!warmup.active && warmup.completed >= warmup.queued);
+  }, undefined, { timeout: 180_000 });
   state = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
+
+  // Feature-system assertions: every new subsystem must expose snapshot state,
+  // the tutorial must react to real input, digging must remove terrain, and a
+  // manual save slot must round-trip through reload.
+  const requiredFeatureKeys = ['tutorial', 'denBuilder', 'ecologyJournal', 'vibrationSense',
+    'seasonalWorld', 'discoveries', 'huntingFeedback', 'survivorRelations', 'accessibility'];
+  for (const key of requiredFeatureKeys) {
+    if (!(key in state)) throw new Error(`Feature system missing from render_game_to_text: ${key}`);
+  }
+  await page.keyboard.down('KeyS');
+  await page.evaluate(() => window.advanceTime(900));
+  await page.keyboard.up('KeyS');
+  const cellsBeforeDig = JSON.parse(await page.evaluate(() => window.render_game_to_text())).den.excavatedCells;
+  await page.keyboard.down('KeyX');
+  await page.evaluate(() => window.advanceTime(3000));
+  await page.keyboard.up('KeyX');
+  const cellsAfterDig = JSON.parse(await page.evaluate(() => window.render_game_to_text())).den.excavatedCells;
+  if (cellsAfterDig - cellsBeforeDig < 12) throw new Error(`Digging too slow in packaged build: ${cellsAfterDig - cellsBeforeDig} cells in 3s`);
+  await page.keyboard.down('KeyW');
+  await page.evaluate(() => window.advanceTime(1800));
+  await page.keyboard.up('KeyW');
+  if (!JSON.parse(await page.evaluate(() => window.render_game_to_text())).tutorial.progress[0]) {
+    throw new Error('Tutorial movement step did not complete from real input.');
+  }
+  const slotRoundTrip = await page.evaluate(async () => {
+    window.tidebornSave.persist('tideborn-slot-1');
+    const saved = JSON.parse(window.render_game_to_text()).time.elapsedSeconds;
+    return { saved, peekVersion: window.tidebornSave.peekSlot('tideborn-slot-1').version };
+  });
+  if (slotRoundTrip.peekVersion !== 2) throw new Error(`Manual save slot wrote unexpected schema version: ${slotRoundTrip.peekVersion}`);
   await page.waitForLoadState('networkidle', { timeout: 30_000 });
   await page.screenshot({ path: new URL('standalone-gameplay.png', output).pathname, fullPage: true, scale: 'css', timeout: 90_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 });

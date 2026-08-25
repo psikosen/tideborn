@@ -40,6 +40,7 @@ export interface RelationsUpdateContext {
   playerFoodCount: number;
   playerDenIds: string[];
   stormIncomingDays: number | null;
+  museumDens?: number;
 }
 
 export interface RelationActionHandlers {
@@ -279,6 +280,7 @@ export class SurvivorRelationsSystem {
   update(dt: number, ctx: RelationsUpdateContext): RelationEvent[] {
     if (dt <= 0) return [];
     this.now = ctx.elapsed;
+    const museumAura = Math.min(3, Math.max(0, ctx.museumDens ?? 0));
     const events: RelationEvent[] = [];
     const seen = new Set<string>();
     let nearest = Infinity;
@@ -302,6 +304,13 @@ export class SurvivorRelationsSystem {
       if (entry.pendingOffer && ctx.elapsed >= entry.pendingOffer.expiresAt) {
         entry.pendingOffer = null;
         entry.status.trading = false;
+      }
+      if (museumAura > 0 && entry.trust < 60) {
+        entry.trust = clamp(entry.trust + 0.05 * museumAura, -100, 100);
+        if (this.rng() < 0.01 * museumAura && entry.lastAction !== 'visited your fossil gallery') {
+          entry.lastAction = 'visited your fossil gallery';
+          entry.lastActionDay = this.dayOf(ctx.elapsed);
+        }
       }
       if (survivor.distance <= TICK_RADIUS_M && ctx.elapsed >= entry.interactionCooldownUntil && !entry.status.predatorToPlayer) {
         const event = this.decide(entry, ctx, typeof survivor.hunger === 'number' ? survivor.hunger : 70);
